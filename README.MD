@@ -40,4 +40,4 @@ Current thinking (may change with implimentation):
 
 If you think this is useful, feel free to reach out! Would be great to build this with others :)
 
-If you already know of a tool like this and i'm waisting my time, please also let me know!
+If you already know of a tool like this and i'm wasting my time, please also let me know!
