@@ -16,8 +16,8 @@ from flask import Flask, render_template, jsonify, request
 from dataclasses import dataclass
 from typing import List, Dict, Optional
 import logging
-import dnsmasq
-import iptables
+from pyarchops_dnsmasq import dnsmasq
+import iptc
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
