@@ -4,7 +4,9 @@
 
 Vasili is designed to get you online "no matter what" in a fully automated way; by enumerating, testing and then picking the best connectivity from your surrounding options at any given time.
 
-### Motivation
+![alt text](image.png)
+
+## Motivation
 
 I do a lot of travel for work, and i'm constantly finding myself offline due to crappy captive portals, timeouts, and just generally bad wifi.
 
