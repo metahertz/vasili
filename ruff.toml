@@ -17,9 +17,14 @@ ignore = [
     "E501",   # line too long (handled by formatter)
 ]
 
+[lint.isort]
+known-first-party = ["vasili"]
+
 [lint.per-file-ignores]
 # Modules may have unused imports for re-export
 "modules/*.py" = ["F401"]
+# vasili.py has imports that may be used dynamically or in iptables rules
+"vasili.py" = ["F401"]
 
 [format]
 quote-style = "single"

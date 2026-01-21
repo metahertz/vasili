@@ -11,7 +11,7 @@ import subprocess
 import threading
 import time
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Optional
 
 import iptc
 import netifaces
@@ -141,7 +141,7 @@ class WifiCard:
         except subprocess.CalledProcessError as e:
             raise ValueError(f"Interface {interface_name} is not a valid wireless device")
 
-    def scan(self) -> List[WifiNetwork]:
+    def scan(self) -> list[WifiNetwork]:
         """Scan for available networks using this card"""
         try:
             # Put interface in scanning mode
@@ -285,7 +285,7 @@ class WifiCard:
             logger.error(f"Error disconnecting {self.interface}: {e}")
             return False
 
-    def get_status(self) -> Dict:
+    def get_status(self) -> dict:
         """Get current status of the wifi card"""
         return {
             'interface': self.interface,
@@ -337,14 +337,14 @@ class WifiCardManager:
         if card in self.cards:
             card.in_use = False
 
-    def get_all_cards(self) -> List[WifiCard]:
+    def get_all_cards(self) -> list[WifiCard]:
         """Get list of all wifi cards"""
         return self.cards
 
 class NetworkScanner:
     def __init__(self, card_manager):
         self.card_manager = card_manager
-        self.scan_results: List[WifiNetwork] = []
+        self.scan_results: list[WifiNetwork] = []
         self.scanning = False
         self.scan_thread = None
         self.scan_queue = queue.Queue()
@@ -392,11 +392,11 @@ class NetworkScanner:
                 logger.error(f"Error during network scan: {e}")
                 time.sleep(1)
 
-    def get_scan_results(self) -> List[WifiNetwork]:
+    def get_scan_results(self) -> list[WifiNetwork]:
         """Get the most recent scan results"""
         return self.scan_results
 
-    def get_next_scan(self) -> List[WifiNetwork]:
+    def get_next_scan(self) -> list[WifiNetwork]:
         """Wait for and return the next scan results"""
         return self.scan_queue.get()
 
@@ -416,7 +416,7 @@ class WifiManager:
         self.card_manager = WifiCardManager()
         self.scanner = NetworkScanner(self.card_manager)
         self.modules = self._load_connection_modules()
-        self.suitable_connections: List[ConnectionResult] = []
+        self.suitable_connections: list[ConnectionResult] = []
         self.status = {
             'scanning': False,
             'cards_in_use': 0,
@@ -425,7 +425,7 @@ class WifiManager:
         }
         self.active_bridge = None
 
-    def _load_connection_modules(self) -> List[ConnectionModule]:
+    def _load_connection_modules(self) -> list[ConnectionModule]:
         modules_dir = os.path.join(os.path.dirname(__file__), 'modules')
         modules = []
 
