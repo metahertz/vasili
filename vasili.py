@@ -42,36 +42,43 @@ def get_config() -> VasiliConfig:
 # Custom exceptions for better error handling
 class VasiliError(Exception):
     """Base exception for Vasili errors."""
+
     pass
 
 
 class NoWifiCardsError(VasiliError):
     """Raised when no WiFi cards are available."""
+
     pass
 
 
 class NoWifiCardsAvailableError(VasiliError):
     """Raised when all WiFi cards are in use."""
+
     pass
 
 
 class WifiConnectionError(VasiliError):
     """Raised when a connection operation fails."""
+
     pass
 
 
 class ScanError(VasiliError):
     """Raised when a network scan operation fails."""
+
     pass
 
 
 class BridgeError(VasiliError):
     """Raised when bridge setup fails."""
+
     pass
 
 
 class ModuleLoadError(VasiliError):
     """Raised when a connection module fails to load."""
+
     pass
 
 
@@ -90,33 +97,32 @@ class SystemHealth:
     def update_card_status(self, cards_count: int):
         self.wifi_cards_available = cards_count > 0
         if not self.wifi_cards_available:
-            self._add_degradation("No WiFi cards detected")
+            self._add_degradation('No WiFi cards detected')
         else:
-            self._remove_degradation("No WiFi cards detected")
+            self._remove_degradation('No WiFi cards detected')
 
     def update_module_status(self, modules_count: int):
         self.modules_loaded = modules_count > 0
         if not self.modules_loaded:
-            self._add_degradation("No connection modules loaded")
+            self._add_degradation('No connection modules loaded')
         else:
-            self._remove_degradation("No connection modules loaded")
+            self._remove_degradation('No connection modules loaded')
 
     def update_scan_status(self, operational: bool, error: Optional[str] = None):
         self.scanning_operational = operational
         if not operational:
-            reason = f"Scanning failed: {error}" if error else "Scanning not operational"
+            reason = f'Scanning failed: {error}' if error else 'Scanning not operational'
             self._add_degradation(reason)
         else:
             # Remove any scanning-related degradation
             self.degradation_reasons = [
-                r for r in self.degradation_reasons
-                if not r.startswith("Scanning")
+                r for r in self.degradation_reasons if not r.startswith('Scanning')
             ]
             self._update_degraded_mode()
 
     def set_error(self, error: str):
         self.last_error = error
-        logger.error(f"System error: {error}")
+        logger.error(f'System error: {error}')
 
     def clear_error(self):
         self.last_error = None
@@ -188,7 +194,7 @@ class NetworkBridge:
                 with open('/proc/sys/net/ipv4/ip_forward', 'r') as f:
                     self._original_ip_forward = f.read().strip()
             except Exception as e:
-                logger.warning(f"Could not read original IP forward state: {e}")
+                logger.warning(f'Could not read original IP forward state: {e}')
                 self._original_ip_forward = '0'
 
             # Enable IP forwarding
@@ -196,64 +202,89 @@ class NetworkBridge:
                 with open('/proc/sys/net/ipv4/ip_forward', 'w') as f:
                     f.write('1')
             except PermissionError:
-                logger.error("Permission denied: cannot enable IP forwarding. Run as root.")
+                logger.error('Permission denied: cannot enable IP forwarding. Run as root.')
                 return False
             except Exception as e:
-                logger.error(f"Failed to enable IP forwarding: {e}")
+                logger.error(f'Failed to enable IP forwarding: {e}')
                 return False
 
             # Clear existing iptables rules (with error checking)
             result = subprocess.run(['iptables', '-F'], capture_output=True, text=True)
             if result.returncode != 0:
-                logger.warning(f"iptables flush failed: {result.stderr}")
+                logger.warning(f'iptables flush failed: {result.stderr}')
 
             result = subprocess.run(['iptables', '-t', 'nat', '-F'], capture_output=True, text=True)
             if result.returncode != 0:
-                logger.warning(f"iptables NAT flush failed: {result.stderr}")
+                logger.warning(f'iptables NAT flush failed: {result.stderr}')
 
             # Set up NAT
             result = subprocess.run(
                 [
-                    'iptables', '-t', 'nat', '-A', 'POSTROUTING',
-                    '-o', self.wifi_interface, '-j', 'MASQUERADE',
+                    'iptables',
+                    '-t',
+                    'nat',
+                    '-A',
+                    'POSTROUTING',
+                    '-o',
+                    self.wifi_interface,
+                    '-j',
+                    'MASQUERADE',
                 ],
-                capture_output=True, text=True
+                capture_output=True,
+                text=True,
             )
             if result.returncode != 0:
-                logger.error(f"Failed to set up NAT masquerade: {result.stderr}")
+                logger.error(f'Failed to set up NAT masquerade: {result.stderr}')
                 self._cleanup_nat()
                 return False
 
             # Allow forwarding
             result = subprocess.run(
                 [
-                    'iptables', '-A', 'FORWARD',
-                    '-i', self.ethernet_interface, '-o', self.wifi_interface,
-                    '-j', 'ACCEPT',
+                    'iptables',
+                    '-A',
+                    'FORWARD',
+                    '-i',
+                    self.ethernet_interface,
+                    '-o',
+                    self.wifi_interface,
+                    '-j',
+                    'ACCEPT',
                 ],
-                capture_output=True, text=True
+                capture_output=True,
+                text=True,
             )
             if result.returncode != 0:
-                logger.error(f"Failed to set up forward rule: {result.stderr}")
+                logger.error(f'Failed to set up forward rule: {result.stderr}')
                 self._cleanup_nat()
                 return False
 
             result = subprocess.run(
                 [
-                    'iptables', '-A', 'FORWARD',
-                    '-i', self.wifi_interface, '-o', self.ethernet_interface,
-                    '-m', 'state', '--state', 'RELATED,ESTABLISHED',
-                    '-j', 'ACCEPT',
+                    'iptables',
+                    '-A',
+                    'FORWARD',
+                    '-i',
+                    self.wifi_interface,
+                    '-o',
+                    self.ethernet_interface,
+                    '-m',
+                    'state',
+                    '--state',
+                    'RELATED,ESTABLISHED',
+                    '-j',
+                    'ACCEPT',
                 ],
-                capture_output=True, text=True
+                capture_output=True,
+                text=True,
             )
             if result.returncode != 0:
-                logger.error(f"Failed to set up reverse forward rule: {result.stderr}")
+                logger.error(f'Failed to set up reverse forward rule: {result.stderr}')
                 self._cleanup_nat()
                 return False
 
             self._nat_configured = True
-            logger.info("NAT setup completed successfully")
+            logger.info('NAT setup completed successfully')
             return True
 
         except Exception as e:
@@ -273,7 +304,7 @@ class NetworkBridge:
                 except Exception:
                     pass
         except Exception as e:
-            logger.warning(f"Error during NAT cleanup: {e}")
+            logger.warning(f'Error during NAT cleanup: {e}')
         self._nat_configured = False
 
     def setup_dhcp(self) -> bool:
@@ -282,21 +313,21 @@ class NetworkBridge:
             # Configure ethernet interface with static IP
             result = subprocess.run(
                 ['ip', 'addr', 'add', '192.168.10.1/24', 'dev', self.ethernet_interface],
-                capture_output=True, text=True
+                capture_output=True,
+                text=True,
             )
             # Ignore "already exists" errors
             if result.returncode != 0 and 'RTNETLINK answers: File exists' not in result.stderr:
-                logger.error(f"Failed to configure IP: {result.stderr}")
+                logger.error(f'Failed to configure IP: {result.stderr}')
                 return False
 
             self._ip_configured = True
 
             result = subprocess.run(
-                ['ip', 'link', 'set', self.ethernet_interface, 'up'],
-                capture_output=True, text=True
+                ['ip', 'link', 'set', self.ethernet_interface, 'up'], capture_output=True, text=True
             )
             if result.returncode != 0:
-                logger.error(f"Failed to bring up interface: {result.stderr}")
+                logger.error(f'Failed to bring up interface: {result.stderr}')
                 self._cleanup_dhcp()
                 return False
 
@@ -307,7 +338,7 @@ class NetworkBridge:
                 subnet_mask='255.255.255.0',
             )
             self.dhcp_server.start()
-            logger.info("DHCP server started successfully")
+            logger.info('DHCP server started successfully')
             return True
 
         except Exception as e:
@@ -322,40 +353,38 @@ class NetworkBridge:
                 try:
                     self.dhcp_server.stop()
                 except Exception as e:
-                    logger.warning(f"Error stopping DHCP server: {e}")
+                    logger.warning(f'Error stopping DHCP server: {e}')
                 self.dhcp_server = None
 
             if self._ip_configured:
                 subprocess.run(
                     ['ip', 'addr', 'del', '192.168.10.1/24', 'dev', self.ethernet_interface],
-                    capture_output=True
+                    capture_output=True,
                 )
                 self._ip_configured = False
         except Exception as e:
-            logger.warning(f"Error during DHCP cleanup: {e}")
+            logger.warning(f'Error during DHCP cleanup: {e}')
 
     def start(self) -> bool:
         """Start the network bridge. Cleans up on partial failure."""
         nat_ok = self.setup_nat()
         if not nat_ok:
-            logger.error("Bridge start failed: NAT setup failed")
+            logger.error('Bridge start failed: NAT setup failed')
             return False
 
         dhcp_ok = self.setup_dhcp()
         if not dhcp_ok:
-            logger.error("Bridge start failed: DHCP setup failed, cleaning up NAT")
+            logger.error('Bridge start failed: DHCP setup failed, cleaning up NAT')
             self._cleanup_nat()
             return False
 
         self.is_active = True
-        logger.info(
-            f"Network bridge active: {self.wifi_interface} -> {self.ethernet_interface}"
-        )
+        logger.info(f'Network bridge active: {self.wifi_interface} -> {self.ethernet_interface}')
         return True
 
     def stop(self):
         """Stop the network bridge and clean up all resources."""
-        logger.info("Stopping network bridge...")
+        logger.info('Stopping network bridge...')
 
         # Stop DHCP server
         self._cleanup_dhcp()
@@ -364,7 +393,7 @@ class NetworkBridge:
         self._cleanup_nat()
 
         self.is_active = False
-        logger.info("Network bridge stopped")
+        logger.info('Network bridge stopped')
 
     def get_status(self) -> dict:
         """Get bridge status information."""
@@ -664,7 +693,7 @@ class WifiCardManager:
             try:
                 interfaces = netifaces.interfaces()
             except Exception as e:
-                error_msg = f"Failed to enumerate network interfaces: {e}"
+                error_msg = f'Failed to enumerate network interfaces: {e}'
                 logger.error(error_msg)
                 self.initialization_errors.append(error_msg)
                 return 0
@@ -695,21 +724,21 @@ class WifiCardManager:
                 try:
                     card = WifiCard(interface)
                     self.cards.append(card)
-                    logger.info(f"Initialized WiFi card: {interface}")
+                    logger.info(f'Initialized WiFi card: {interface}')
                 except ValueError as e:
                     # Interface exists but isn't a valid wireless device
-                    error_msg = f"Skipping {interface}: {e}"
+                    error_msg = f'Skipping {interface}: {e}'
                     logger.warning(error_msg)
                     self.initialization_errors.append(error_msg)
                 except Exception as e:
-                    error_msg = f"Failed to initialize wifi card {interface}: {e}"
+                    error_msg = f'Failed to initialize wifi card {interface}: {e}'
                     logger.error(error_msg)
                     self.initialization_errors.append(error_msg)
 
             if not self.cards:
                 logger.warning(
-                    "No WiFi cards detected. System will operate in degraded mode. "
-                    "Scanning and connection features will be unavailable."
+                    'No WiFi cards detected. System will operate in degraded mode. '
+                    'Scanning and connection features will be unavailable.'
                 )
 
             return len(self.cards)
