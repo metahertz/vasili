@@ -1,6 +1,6 @@
 import logging
 from typing import Optional
-from ..vasili import ConnectionModule, WifiNetwork, ConnectionResult
+from vasili import ConnectionModule, WifiNetwork, ConnectionResult
 import speedtest
 
 logger = logging.getLogger(__name__)
