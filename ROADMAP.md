@@ -26,6 +26,14 @@ These items block all other work. The system cannot be tested or used without th
 
 ---
 
+## P0.5 - Deployment
+
+Basic deployment tooling to get vasili onto target hardware.
+
+- [ ] **SSH deployment script** - Simple script to deploy vasili to an Ubuntu-based micro router via SSH. Should handle file transfer, dependency installation, and basic service setup.
+
+---
+
 ## P1 - Reliability & Testing
 
 Once P0 is complete, focus on making it reliable.
