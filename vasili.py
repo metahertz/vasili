@@ -40,6 +40,122 @@ def get_config() -> VasiliConfig:
     return _config
 
 
+# Custom exceptions for better error handling
+class VasiliError(Exception):
+    """Base exception for Vasili errors."""
+
+    pass
+
+
+class NoWifiCardsError(VasiliError):
+    """Raised when no WiFi cards are available."""
+
+    pass
+
+
+class NoWifiCardsAvailableError(VasiliError):
+    """Raised when all WiFi cards are in use."""
+
+    pass
+
+
+class WifiConnectionError(VasiliError):
+    """Raised when a connection operation fails."""
+
+    pass
+
+
+class ScanError(VasiliError):
+    """Raised when a network scan operation fails."""
+
+    pass
+
+
+class BridgeError(VasiliError):
+    """Raised when bridge setup fails."""
+
+    pass
+
+
+class ModuleLoadError(VasiliError):
+    """Raised when a connection module fails to load."""
+
+    pass
+
+
+# System health status
+class SystemHealth:
+    """Tracks overall system health and degraded states."""
+
+    def __init__(self):
+        self.wifi_cards_available = False
+        self.modules_loaded = False
+        self.scanning_operational = False
+        self.last_error: Optional[str] = None
+        self.degraded_mode = False
+        self.degradation_reasons: list[str] = []
+
+    def update_card_status(self, cards_count: int):
+        self.wifi_cards_available = cards_count > 0
+        if not self.wifi_cards_available:
+            self._add_degradation('No WiFi cards detected')
+        else:
+            self._remove_degradation('No WiFi cards detected')
+
+    def update_module_status(self, modules_count: int):
+        self.modules_loaded = modules_count > 0
+        if not self.modules_loaded:
+            self._add_degradation('No connection modules loaded')
+        else:
+            self._remove_degradation('No connection modules loaded')
+
+    def update_scan_status(self, operational: bool, error: Optional[str] = None):
+        self.scanning_operational = operational
+        if not operational:
+            reason = f'Scanning failed: {error}' if error else 'Scanning not operational'
+            self._add_degradation(reason)
+        else:
+            # Remove any scanning-related degradation
+            self.degradation_reasons = [
+                r for r in self.degradation_reasons if not r.startswith('Scanning')
+            ]
+            self._update_degraded_mode()
+
+    def set_error(self, error: str):
+        self.last_error = error
+        logger.error(f'System error: {error}')
+
+    def clear_error(self):
+        self.last_error = None
+
+    def _add_degradation(self, reason: str):
+        if reason not in self.degradation_reasons:
+            self.degradation_reasons.append(reason)
+        self._update_degraded_mode()
+
+    def _remove_degradation(self, reason: str):
+        if reason in self.degradation_reasons:
+            self.degradation_reasons.remove(reason)
+        self._update_degraded_mode()
+
+    def _update_degraded_mode(self):
+        self.degraded_mode = len(self.degradation_reasons) > 0
+
+    def to_dict(self) -> dict:
+        return {
+            'wifi_cards_available': self.wifi_cards_available,
+            'modules_loaded': self.modules_loaded,
+            'scanning_operational': self.scanning_operational,
+            'last_error': self.last_error,
+            'degraded_mode': self.degraded_mode,
+            'degradation_reasons': self.degradation_reasons,
+        }
+
+    def is_operational(self) -> bool:
+        """Check if system can perform basic operations."""
+        return self.wifi_cards_available and self.modules_loaded
+
+
 @dataclass
 class WifiNetwork:
     ssid: str
@@ -67,19 +183,43 @@ class NetworkBridge:
         self.ethernet_interface = ethernet_interface
         self.dhcp_server = None
         self.is_active = False
+        self._nat_configured = False
+        self._ip_configured = False
+        self._original_ip_forward: Optional[str] = None
 
-    def setup_nat(self):
+    def setup_nat(self) -> bool:
+        """Set up NAT for traffic forwarding."""
         try:
-            # Enable IP forwarding
-            with open('/proc/sys/net/ipv4/ip_forward', 'w') as f:
-                f.write('1')
+            # Save original IP forwarding state
+            try:
+                with open('/proc/sys/net/ipv4/ip_forward', 'r') as f:
+                    self._original_ip_forward = f.read().strip()
+            except Exception as e:
+                logger.warning(f'Could not read original IP forward state: {e}')
+                self._original_ip_forward = '0'
 
-            # Clear existing iptables rules
-            subprocess.run(['iptables', '-F'])
-            subprocess.run(['iptables', '-t', 'nat', '-F'])
+            # Enable IP forwarding
+            try:
+                with open('/proc/sys/net/ipv4/ip_forward', 'w') as f:
+                    f.write('1')
+            except PermissionError:
+                logger.error('Permission denied: cannot enable IP forwarding. Run as root.')
+                return False
+            except Exception as e:
+                logger.error(f'Failed to enable IP forwarding: {e}')
+                return False
+
+            # Clear existing iptables rules (with error checking)
+            result = subprocess.run(['iptables', '-F'], capture_output=True, text=True)
+            if result.returncode != 0:
+                logger.warning(f'iptables flush failed: {result.stderr}')
+
+            result = subprocess.run(['iptables', '-t', 'nat', '-F'], capture_output=True, text=True)
+            if result.returncode != 0:
+                logger.warning(f'iptables NAT flush failed: {result.stderr}')
 
             # Set up NAT
-            subprocess.run(
+            result = subprocess.run(
                 [
                     'iptables',
                     '-t',
@@ -90,11 +230,17 @@ class NetworkBridge:
                     self.wifi_interface,
                     '-j',
                     'MASQUERADE',
-                ]
+                ],
+                capture_output=True,
+                text=True,
             )
+            if result.returncode != 0:
+                logger.error(f'Failed to set up NAT masquerade: {result.stderr}')
+                self._cleanup_nat()
+                return False
 
             # Allow forwarding
-            subprocess.run(
+            result = subprocess.run(
                 [
                     'iptables',
                     '-A',
@@ -105,9 +251,16 @@ class NetworkBridge:
                     self.wifi_interface,
                     '-j',
                     'ACCEPT',
-                ]
+                ],
+                capture_output=True,
+                text=True,
             )
-            subprocess.run(
+            if result.returncode != 0:
+                logger.error(f'Failed to set up forward rule: {result.stderr}')
+                self._cleanup_nat()
+                return False
+
+            result = subprocess.run(
                 [
                     'iptables',
                     '-A',
@@ -122,19 +275,62 @@ class NetworkBridge:
                     'RELATED,ESTABLISHED',
                     '-j',
                     'ACCEPT',
-                ]
+                ],
+                capture_output=True,
+                text=True,
             )
+            if result.returncode != 0:
+                logger.error(f'Failed to set up reverse forward rule: {result.stderr}')
+                self._cleanup_nat()
+                return False
 
+            self._nat_configured = True
+            logger.info('NAT setup completed successfully')
             return True
+
         except Exception as e:
             logger.error(f'Failed to set up NAT: {e}')
+            self._cleanup_nat()
             return False
 
-    def setup_dhcp(self):
+    def _cleanup_nat(self):
+        """Clean up NAT configuration on failure."""
+        try:
+            subprocess.run(['iptables', '-F'], capture_output=True)
+            subprocess.run(['iptables', '-t', 'nat', '-F'], capture_output=True)
+            if self._original_ip_forward is not None:
+                try:
+                    with open('/proc/sys/net/ipv4/ip_forward', 'w') as f:
+                        f.write(self._original_ip_forward)
+                except Exception:
+                    pass
+        except Exception as e:
+            logger.warning(f'Error during NAT cleanup: {e}')
+        self._nat_configured = False
+
+    def setup_dhcp(self) -> bool:
+        """Set up DHCP server on ethernet interface."""
         try:
             # Configure ethernet interface with static IP
-            subprocess.run(['ip', 'addr', 'add', '192.168.10.1/24', 'dev', self.ethernet_interface])
-            subprocess.run(['ip', 'link', 'set', self.ethernet_interface, 'up'])
+            result = subprocess.run(
+                ['ip', 'addr', 'add', '192.168.10.1/24', 'dev', self.ethernet_interface],
+                capture_output=True,
+                text=True,
+            )
+            # Ignore "already exists" errors
+            if result.returncode != 0 and 'RTNETLINK answers: File exists' not in result.stderr:
+                logger.error(f'Failed to configure IP: {result.stderr}')
+                return False
+
+            self._ip_configured = True
+
+            result = subprocess.run(
+                ['ip', 'link', 'set', self.ethernet_interface, 'up'], capture_output=True, text=True
+            )
+            if result.returncode != 0:
+                logger.error(f'Failed to bring up interface: {result.stderr}')
+                self._cleanup_dhcp()
+                return False
 
             # Start DHCP server
             self.dhcp_server = dnsmasq.DHCP(
@@ -143,30 +339,72 @@ class NetworkBridge:
                 subnet_mask='255.255.255.0',
             )
             self.dhcp_server.start()
+            logger.info('DHCP server started successfully')
             return True
+
         except Exception as e:
             logger.error(f'Failed to set up DHCP: {e}')
+            self._cleanup_dhcp()
             return False
 
+    def _cleanup_dhcp(self):
+        """Clean up DHCP configuration on failure."""
+        try:
+            if self.dhcp_server:
+                try:
+                    self.dhcp_server.stop()
+                except Exception as e:
+                    logger.warning(f'Error stopping DHCP server: {e}')
+                self.dhcp_server = None
+
+            if self._ip_configured:
+                subprocess.run(
+                    ['ip', 'addr', 'del', '192.168.10.1/24', 'dev', self.ethernet_interface],
+                    capture_output=True,
+                )
+                self._ip_configured = False
+        except Exception as e:
+            logger.warning(f'Error during DHCP cleanup: {e}')
+
     def start(self) -> bool:
-        if self.setup_nat() and self.setup_dhcp():
-            self.is_active = True
-            return True
-        return False
+        """Start the network bridge. Cleans up on partial failure."""
+        nat_ok = self.setup_nat()
+        if not nat_ok:
+            logger.error('Bridge start failed: NAT setup failed')
+            return False
+
+        dhcp_ok = self.setup_dhcp()
+        if not dhcp_ok:
+            logger.error('Bridge start failed: DHCP setup failed, cleaning up NAT')
+            self._cleanup_nat()
+            return False
+
+        self.is_active = True
+        logger.info(f'Network bridge active: {self.wifi_interface} -> {self.ethernet_interface}')
+        return True
 
     def stop(self):
-        if self.dhcp_server:
-            self.dhcp_server.stop()
+        """Stop the network bridge and clean up all resources."""
+        logger.info('Stopping network bridge...')
 
-        # Disable IP forwarding
-        with open('/proc/sys/net/ipv4/ip_forward', 'w') as f:
-            f.write('0')
+        # Stop DHCP server
+        self._cleanup_dhcp()
 
-        # Clear iptables rules
-        subprocess.run(['iptables', '-F'])
-        subprocess.run(['iptables', '-t', 'nat', '-F'])
+        # Clean up NAT
+        self._cleanup_nat()
 
         self.is_active = False
+        logger.info('Network bridge stopped')
+
+    def get_status(self) -> dict:
+        """Get bridge status information."""
+        return {
+            'is_active': self.is_active,
+            'wifi_interface': self.wifi_interface,
+            'ethernet_interface': self.ethernet_interface,
+            'nat_configured': self._nat_configured,
+            'dhcp_running': self.dhcp_server is not None,
+        }
 
 
 class WifiCard:
@@ -433,64 +671,123 @@ class WifiCard:
 
 class WifiCardManager:
     def __init__(self):
-        self.cards = []
+        self.cards: list[WifiCard] = []
+        self._lock = threading.Lock()
+        self.initialization_errors: list[str] = []
         self.scan_for_cards()
 
-    def scan_for_cards(self):
-        """Scan for available wifi cards and add them to the list"""
-        config = get_config()
+    def scan_for_cards(self) -> int:
+        """
+        Scan for available wifi cards and add them to the list.
 
-        # Clear existing cards
-        self.cards = []
+        Returns the number of cards found. Gracefully handles systems
+        with no WiFi hardware by continuing without error.
+        """
+        with self._lock:
+            config = get_config()
 
-        # Get list of network interfaces
-        interfaces = netifaces.interfaces()
+            # Clear existing cards
+            self.cards = []
+            self.initialization_errors = []
 
-        # Find wifi interfaces
-        wifi_interfaces = []
-        for interface in interfaces:
-            if interface.startswith(('wlan', 'wifi')):
-                # Skip excluded interfaces
-                if interface in config.interfaces.excluded:
-                    logger.debug(f'Skipping excluded interface: {interface}')
-                    continue
-                wifi_interfaces.append(interface)
-
-        # Sort by preference if preferred list is configured
-        if config.interfaces.preferred:
-            # Put preferred interfaces first, in order
-            def sort_key(iface):
-                try:
-                    return config.interfaces.preferred.index(iface)
-                except ValueError:
-                    return len(config.interfaces.preferred) + 1
-
-            wifi_interfaces.sort(key=sort_key)
-
-        # Initialize cards
-        for interface in wifi_interfaces:
+            # Get list of network interfaces
             try:
-                card = WifiCard(interface)
-                self.cards.append(card)
+                interfaces = netifaces.interfaces()
             except Exception as e:
-                logger.error(f'Failed to initialize wifi card {interface}: {e}')
+                error_msg = f'Failed to enumerate network interfaces: {e}'
+                logger.error(error_msg)
+                self.initialization_errors.append(error_msg)
+                return 0
+
+            # Find wifi interfaces
+            wifi_interfaces = []
+            for interface in interfaces:
+                if interface.startswith(('wlan', 'wifi')):
+                    # Skip excluded interfaces
+                    if interface in config.interfaces.excluded:
+                        logger.debug(f'Skipping excluded interface: {interface}')
+                        continue
+                    wifi_interfaces.append(interface)
+
+            # Sort by preference if preferred list is configured
+            if config.interfaces.preferred:
+                # Put preferred interfaces first, in order
+                def sort_key(iface):
+                    try:
+                        return config.interfaces.preferred.index(iface)
+                    except ValueError:
+                        return len(config.interfaces.preferred) + 1
+
+                wifi_interfaces.sort(key=sort_key)
+
+            # Initialize cards
+            for interface in wifi_interfaces:
+                try:
+                    card = WifiCard(interface)
+                    self.cards.append(card)
+                    logger.info(f'Initialized WiFi card: {interface}')
+                except ValueError as e:
+                    # Interface exists but isn't a valid wireless device
+                    error_msg = f'Skipping {interface}: {e}'
+                    logger.warning(error_msg)
+                    self.initialization_errors.append(error_msg)
+                except Exception as e:
+                    error_msg = f'Failed to initialize wifi card {interface}: {e}'
+                    logger.error(error_msg)
+                    self.initialization_errors.append(error_msg)
+
+            if not self.cards:
+                logger.warning(
+                    'No WiFi cards detected. System will operate in degraded mode. '
+                    'Scanning and connection features will be unavailable.'
+                )
+
+            return len(self.cards)
 
     def lease_card(self) -> Optional[WifiCard]:
-        """Get an available wifi card and mark it as in use"""
-        for card in self.cards:
-            if not card.in_use:
-                card.in_use = True
-                return card
-        return None
+        """Get an available wifi card and mark it as in use."""
+        with self._lock:
+            for card in self.cards:
+                if not card.in_use:
+                    card.in_use = True
+                    return card
+            return None
+
+    def get_card(self) -> Optional[WifiCard]:
+        """Alias for lease_card() for backwards compatibility with modules."""
+        return self.lease_card()
 
     def return_card(self, card: WifiCard):
-        """Return a card to the pool of available cards"""
-        if card in self.cards:
-            card.in_use = False
+        """Return a card to the pool of available cards."""
+        with self._lock:
+            if card in self.cards:
+                card.in_use = False
 
     def get_all_cards(self) -> list[WifiCard]:
-        """Get list of all wifi cards"""
-        return self.cards
+        """Get list of all wifi cards."""
+        with self._lock:
+            return list(self.cards)
+
+    def get_available_count(self) -> int:
+        """Get count of cards not currently in use."""
+        with self._lock:
+            return sum(1 for card in self.cards if not card.in_use)
+
+    def has_cards(self) -> bool:
+        """Check if any WiFi cards are available."""
+        with self._lock:
+            return len(self.cards) > 0
+
+    def get_status(self) -> dict:
+        """Get status information about WiFi cards."""
+        with self._lock:
+            return {
+                'total_cards': len(self.cards),
+                'available_cards': sum(1 for c in self.cards if not c.in_use),
+                'in_use_cards': sum(1 for c in self.cards if c.in_use),
+                'card_interfaces': [c.interface for c in self.cards],
+                'initialization_errors': self.initialization_errors,
+            }
 
 
 class NetworkScanner:
