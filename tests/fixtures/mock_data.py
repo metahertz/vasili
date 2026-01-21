@@ -81,8 +81,8 @@ NMCLI_CONNECT_FAILURE = """Error: Connection activation failed: (7) Secrets were
 """
 
 # Sample interface operstate file contents
-INTERFACE_UP = "up\n"
-INTERFACE_DOWN = "down\n"
+INTERFACE_UP = 'up\n'
+INTERFACE_DOWN = 'down\n'
 
 # Sample netifaces output
 SAMPLE_INTERFACES = ['lo', 'eth0', 'wlan0', 'wlan1']

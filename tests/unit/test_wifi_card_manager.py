@@ -153,7 +153,7 @@ class TestWifiCardManager:
         """Test that scan_for_cards handles WifiCard initialization failures."""
         with patch('subprocess.run') as mock_run:
             # Make all iwconfig calls fail
-            mock_run.side_effect = Exception("Interface error")
+            mock_run.side_effect = Exception('Interface error')
 
             manager = WifiCardManager()
             # Should have no cards due to init failures

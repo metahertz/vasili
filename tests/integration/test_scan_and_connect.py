@@ -1,9 +1,9 @@
 """Integration tests for scan_and_connect main loop."""
 
+import queue
+
 import pytest
-import time
-import threading
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import patch
 from vasili import (
     WifiManager,
     WifiCardManager,
@@ -187,7 +187,7 @@ class TestScanAndConnect:
 
         def failing_connect(network):
             if network.ssid == 'OpenCafe':
-                raise Exception("Connection failed")
+                raise Exception('Connection failed')
             return original_connect(network)
 
         module.connect = failing_connect
@@ -206,7 +206,7 @@ class TestScanAndConnect:
                     results.append(result)
                 except Exception as e:
                     # Exception should be caught
-                    assert "Connection failed" in str(e)
+                    assert 'Connection failed' in str(e)
 
         # Should continue despite exception
         assert True
@@ -224,7 +224,7 @@ class TestScanAndConnect:
         try:
             networks = scanner.scan_queue.get(timeout=2)
             assert len(networks) > 0
-        except:
+        except queue.Empty:
             pass  # Timeout is ok
 
         # Stop scanner
@@ -308,7 +308,7 @@ class TestScanAndConnect:
                         if result.connected:
                             successful_connections.append(result)
                             break  # One connection per scan cycle
-            except:
+            except queue.Empty:
                 pass  # Timeout is ok
 
         # Stop scanner

@@ -5,9 +5,7 @@ from unittest.mock import patch
 from subprocess import CompletedProcess
 from vasili import WifiCard, WifiNetwork
 from tests.fixtures.mock_data import (
-    IWLIST_SCAN_OUTPUT,
     IWCONFIG_OUTPUT_VALID,
-    SAMPLE_NETWORKS,
 )
 
 
@@ -24,8 +22,8 @@ class TestWifiCard:
     def test_init_invalid_interface(self):
         """Test WifiCard initialization with invalid interface."""
         with patch('subprocess.run') as mock_run:
-            mock_run.side_effect = Exception("no wireless extensions")
-            with pytest.raises(ValueError, match="not a valid wireless device"):
+            mock_run.side_effect = Exception('no wireless extensions')
+            with pytest.raises(ValueError, match='not a valid wireless device'):
                 WifiCard('eth0')
 
     def test_scan_success(self, mock_subprocess):
@@ -135,7 +133,7 @@ class TestWifiCard:
                 # nmcli disconnect succeeds
                 CompletedProcess(args=[], returncode=0, stdout=''),
                 # nmcli connect times out
-                Exception("Timeout"),
+                Exception('Timeout'),
             ]
 
             card = WifiCard('wlan0')
