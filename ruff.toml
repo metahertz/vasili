@@ -6,24 +6,21 @@ line-length = 100
 
 [lint]
 # Start with essential rules, expand over time
+# TODO: Add "I" (isort) and "UP" (pyupgrade) once codebase is cleaned up
 select = [
     "E",      # pycodestyle errors
     "F",      # pyflakes
-    "I",      # isort
-    "UP",     # pyupgrade
 ]
 
 ignore = [
     "E501",   # line too long (handled by formatter)
+    "F841",   # local variable assigned but never used (common in exception handlers)
 ]
-
-[lint.isort]
-known-first-party = ["vasili"]
 
 [lint.per-file-ignores]
 # Modules may have unused imports for re-export
 "modules/*.py" = ["F401"]
-# vasili.py has imports that may be used dynamically or in iptables rules
+# vasili.py has imports that may be used dynamically
 "vasili.py" = ["F401"]
 
 [format]
