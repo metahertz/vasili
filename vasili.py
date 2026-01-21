@@ -2,22 +2,23 @@
 # Main application entry point
 # Modules are loaded dynamically from the modules directory
 
-import subprocess
-import wifi
-import threading
-import queue
-import time
-import speedtest
-import netifaces
-import os
 import importlib
 import inspect
-from flask import Flask, render_template, jsonify, request
-from dataclasses import dataclass
-from typing import List, Dict, Optional
 import logging
-from pyarchops_dnsmasq import dnsmasq
+import os
+import queue
+import subprocess
+import threading
+import time
+from dataclasses import dataclass
+from typing import Dict, List, Optional
+
 import iptc
+import netifaces
+import speedtest
+import wifi
+from flask import Flask, jsonify, render_template, request
+from pyarchops_dnsmasq import dnsmasq
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)

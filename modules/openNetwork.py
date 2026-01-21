@@ -1,5 +1,8 @@
 import logging
 from typing import Optional
+
+import speedtest
+
 from vasili import ConnectionModule, WifiNetwork, ConnectionResult
 
 logger = logging.getLogger(__name__)
@@ -32,11 +35,11 @@ class OpenNetworkModule(ConnectionModule):
             card.connect(network)
 
             # Run speedtest to verify connection
-            speedtest = speedtest.Speedtest()
-            speedtest.get_best_server()
-            download_speed = speedtest.download() / 1_000_000  # Convert to Mbps
-            upload_speed = speedtest.upload() / 1_000_000  # Convert to Mbps
-            ping = speedtest.results.ping
+            st = speedtest.Speedtest()
+            st.get_best_server()
+            download_speed = st.download() / 1_000_000  # Convert to Mbps
+            upload_speed = st.upload() / 1_000_000  # Convert to Mbps
+            ping = st.results.ping
 
             return ConnectionResult(
                 network=network,

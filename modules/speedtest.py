@@ -1,5 +1,7 @@
 import logging
+
 import speedtest
+
 from vasili import ConnectionModule, WifiNetwork, ConnectionResult
 
 logger = logging.getLogger(__name__)
