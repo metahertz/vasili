@@ -7,6 +7,7 @@ from vasili import ConnectionModule, WifiNetwork, ConnectionResult
 
 logger = logging.getLogger(__name__)
 
+
 class OpenNetworkModule(ConnectionModule):
     def __init__(self, card_manager):
         super().__init__(card_manager)
@@ -20,15 +21,15 @@ class OpenNetworkModule(ConnectionModule):
             # Get a wifi card
             card = self.card_manager.get_card()
             if not card:
-                logger.error("No wifi cards available")
+                logger.error('No wifi cards available')
                 return ConnectionResult(
                     network=network,
                     download_speed=0,
                     upload_speed=0,
                     ping=0,
                     connected=False,
-                    connection_method="open",
-                    interface=""
+                    connection_method='open',
+                    interface='',
                 )
 
             # Connect to the network
@@ -47,18 +48,18 @@ class OpenNetworkModule(ConnectionModule):
                 upload_speed=upload_speed,
                 ping=ping,
                 connected=True,
-                connection_method="open",
-                interface=card.interface
+                connection_method='open',
+                interface=card.interface,
             )
 
         except Exception as e:
-            logger.error(f"Failed to connect to open network: {e}")
+            logger.error(f'Failed to connect to open network: {e}')
             return ConnectionResult(
                 network=network,
                 download_speed=0,
                 upload_speed=0,
                 ping=0,
                 connected=False,
-                connection_method="open",
-                interface=""
+                connection_method='open',
+                interface='',
             )
