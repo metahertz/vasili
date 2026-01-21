@@ -20,9 +20,23 @@ import wifi
 from flask import Flask, jsonify, render_template, request
 from pyarchops_dnsmasq import dnsmasq
 
-# Configure logging
+from config import VasiliConfig, apply_logging_config, load_config
+
+# Configure logging (will be updated by config)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Global config - loaded at startup
+_config: Optional[VasiliConfig] = None
+
+
+def get_config() -> VasiliConfig:
+    """Get the current configuration."""
+    global _config
+    if _config is None:
+        _config = load_config()
+        apply_logging_config(_config)
+    return _config
 
 
 @dataclass
@@ -324,6 +338,8 @@ class WifiCardManager:
 
     def scan_for_cards(self):
         """Scan for available wifi cards and add them to the list"""
+        config = get_config()
+
         # Clear existing cards
         self.cards = []
 
@@ -331,13 +347,33 @@ class WifiCardManager:
         interfaces = netifaces.interfaces()
 
         # Find wifi interfaces
+        wifi_interfaces = []
         for interface in interfaces:
             if interface.startswith(('wlan', 'wifi')):
+                # Skip excluded interfaces
+                if interface in config.interfaces.excluded:
+                    logger.debug(f'Skipping excluded interface: {interface}')
+                    continue
+                wifi_interfaces.append(interface)
+
+        # Sort by preference if preferred list is configured
+        if config.interfaces.preferred:
+            # Put preferred interfaces first, in order
+            def sort_key(iface):
                 try:
-                    card = WifiCard(interface)
-                    self.cards.append(card)
-                except Exception as e:
-                    logger.error(f'Failed to initialize wifi card {interface}: {e}')
+                    return config.interfaces.preferred.index(iface)
+                except ValueError:
+                    return len(config.interfaces.preferred) + 1
+
+            wifi_interfaces.sort(key=sort_key)
+
+        # Initialize cards
+        for interface in wifi_interfaces:
+            try:
+                card = WifiCard(interface)
+                self.cards.append(card)
+            except Exception as e:
+                logger.error(f'Failed to initialize wifi card {interface}: {e}')
 
     def lease_card(self) -> Optional[WifiCard]:
         """Get an available wifi card and mark it as in use"""
@@ -384,6 +420,9 @@ class NetworkScanner:
 
     def _scan_worker(self):
         """Background worker that continuously scans for networks"""
+        config = get_config()
+        scan_interval = config.scanner.scan_interval
+
         while self.scanning:
             try:
                 # Get an available wifi card
@@ -402,7 +441,7 @@ class NetworkScanner:
                 self.card_manager.return_card(card)
 
                 # Wait before scanning again
-                time.sleep(5)
+                time.sleep(scan_interval)
 
             except Exception as e:
                 logger.error(f'Error during network scan: {e}')
@@ -444,6 +483,7 @@ class WifiManager:
         self.active_bridge = None
 
     def _load_connection_modules(self) -> list[ConnectionModule]:
+        config = get_config()
         modules_dir = os.path.join(os.path.dirname(__file__), 'modules')
         modules = []
 
@@ -451,10 +491,19 @@ class WifiManager:
         if not os.path.exists(modules_dir):
             os.makedirs(modules_dir)
 
+        # Get enabled modules from config (None means all modules)
+        enabled_modules = config.modules.enabled
+
         # Import all modules from the modules directory
         for filename in os.listdir(modules_dir):
-            if filename.endswith('.py'):
+            if filename.endswith('.py') and filename != '__init__.py':
                 module_name = filename[:-3]
+
+                # Skip if module is not in enabled list (when enabled list is specified)
+                if enabled_modules is not None and module_name not in enabled_modules:
+                    logger.debug(f'Skipping disabled module: {module_name}')
+                    continue
+
                 try:
                     module = importlib.import_module(f'modules.{module_name}')
                     # Find all ConnectionModule subclasses in the module
@@ -465,6 +514,7 @@ class WifiManager:
                             and obj != ConnectionModule
                         ):
                             modules.append(obj(self.card_manager))
+                            logger.info(f'Loaded module: {module_name}')
                 except Exception as e:
                     logger.error(f'Failed to load module {module_name}: {e}')
 
@@ -626,12 +676,25 @@ def stop_connection():
 
 
 def main():
+    # Load configuration
+    config = get_config()
+    logger.info('Vasili starting with configuration loaded')
+
     # Start scanning in a separate thread
     scan_thread = threading.Thread(target=wifi_manager.scan_and_connect)
     scan_thread.start()
 
-    # Start web interface
-    app.run(host='0.0.0.0', port=5000)
+    # Start web interface if enabled
+    if config.web.enabled:
+        logger.info(f'Starting web interface on {config.web.host}:{config.web.port}')
+        app.run(host=config.web.host, port=config.web.port)
+    else:
+        logger.info('Web interface disabled, running in headless mode')
+        # Keep the main thread alive
+        try:
+            scan_thread.join()
+        except KeyboardInterrupt:
+            logger.info('Shutting down...')
 
 
 if __name__ == '__main__':

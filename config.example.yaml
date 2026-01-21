@@ -1,0 +1,48 @@
+# Vasili Configuration File
+# Copy this file to config.yaml and customize as needed.
+# All settings are optional - defaults will be used for any missing values.
+
+# WiFi interface preferences
+interfaces:
+  # Preferred interfaces, ordered by priority (first = highest priority)
+  # Cards are leased in this order when available
+  preferred:
+    # - wlan0
+    # - wlan1
+
+  # Interfaces to exclude from use entirely
+  excluded:
+    # - wlan2
+
+  # Dedicated interface for scanning (optional)
+  # If set, this interface will be used exclusively for network scanning
+  # scan_interface: wlan0
+
+# Module settings
+modules:
+  # List of enabled module names. If not specified, all modules are enabled.
+  # Module names correspond to the Python file names in the modules/ directory
+  # (without the .py extension)
+  enabled:
+    # - openNetwork
+    # - wpa2Network
+    # - speedtest
+
+# Network scanner settings
+scanner:
+  # Interval between scans in seconds
+  scan_interval: 5
+
+# Web interface settings
+web:
+  # Host to bind to (0.0.0.0 = all interfaces)
+  host: "0.0.0.0"
+  # Port to listen on
+  port: 5000
+  # Set to false to run in headless mode (no web interface)
+  enabled: true
+
+# Logging settings
+logging:
+  # Log level: DEBUG, INFO, WARNING, ERROR, CRITICAL
+  level: "INFO"
