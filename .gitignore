@@ -1,3 +1,4 @@
+# Python
 __pycache__/
 *.py[cod]
 *$py.class
@@ -15,15 +16,30 @@ parts/
 sdist/
 var/
 wheels/
+pip-wheel-metadata/
+share/python-wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+
+# Virtual environments
+venv/
+ENV/
+env/
+
+# Testing
 .pytest_cache/
 .coverage
 htmlcov/
 .tox/
-.env
-.venv
-env/
-venv/
-ENV/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
