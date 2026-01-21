@@ -1,4 +1,5 @@
 """Unit tests for WifiCardManager class"""
+
 from unittest.mock import MagicMock, Mock, patch
 
 import pytest
@@ -64,7 +65,7 @@ class TestWifiCardManagerInit:
         mock_wifi_card_class.side_effect = [
             mock_card1,
             ValueError('Not a valid wireless device'),
-            mock_card2
+            mock_card2,
         ]
 
         manager = WifiCardManager()

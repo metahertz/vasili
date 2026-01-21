@@ -1,4 +1,5 @@
 """Unit tests for NetworkScanner class"""
+
 import time
 from unittest.mock import MagicMock, Mock, patch
 
@@ -99,7 +100,7 @@ class TestNetworkScannerScanWorker:
             signal_strength=80,
             channel=6,
             encryption_type='',
-            is_open=True
+            is_open=True,
         )
         network2 = WifiNetwork(
             ssid='TestNet2',
@@ -107,7 +108,7 @@ class TestNetworkScannerScanWorker:
             signal_strength=60,
             channel=11,
             encryption_type='WPA2',
-            is_open=False
+            is_open=False,
         )
 
         mock_card.scan.return_value = [network1, network2]
@@ -199,7 +200,7 @@ class TestNetworkScannerGetResults:
             signal_strength=80,
             channel=6,
             encryption_type='',
-            is_open=True
+            is_open=True,
         )
 
         scanner.scan_results = [network]
@@ -220,7 +221,7 @@ class TestNetworkScannerGetResults:
             signal_strength=80,
             channel=6,
             encryption_type='',
-            is_open=True
+            is_open=True,
         )
 
         # Put networks in the queue

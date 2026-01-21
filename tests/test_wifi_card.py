@@ -1,4 +1,5 @@
 """Unit tests for WifiCard class"""
+
 import subprocess
 from unittest.mock import MagicMock, Mock, mock_open, patch
 
@@ -19,11 +20,7 @@ class TestWifiCardInit:
 
         assert card.interface == 'wlan0'
         assert card.in_use is False
-        mock_run.assert_called_once_with(
-            ['iwconfig', 'wlan0'],
-            check=True,
-            capture_output=True
-        )
+        mock_run.assert_called_once_with(['iwconfig', 'wlan0'], check=True, capture_output=True)
 
     @patch('subprocess.run')
     def test_init_invalid_interface(self, mock_run):
@@ -59,10 +56,7 @@ class TestWifiCardScan:
                     IE: IEEE 802.11i/WPA2 Version 1
 """
 
-        mock_run.return_value = Mock(
-            returncode=0,
-            stdout=scan_output
-        )
+        mock_run.return_value = Mock(returncode=0, stdout=scan_output)
 
         networks = card.scan()
 
@@ -88,10 +82,7 @@ class TestWifiCardScan:
         mock_run.return_value = Mock(returncode=0)
         card = WifiCard('wlan0')
 
-        mock_run.return_value = Mock(
-            returncode=0,
-            stdout="wlan0     Scan completed :\n"
-        )
+        mock_run.return_value = Mock(returncode=0, stdout='wlan0     Scan completed :\n')
 
         networks = card.scan()
 
@@ -125,7 +116,7 @@ class TestWifiCardConnect:
             signal_strength=80,
             channel=6,
             encryption_type='',
-            is_open=True
+            is_open=True,
         )
 
         result = card.connect(network)
@@ -145,7 +136,7 @@ class TestWifiCardConnect:
             signal_strength=80,
             channel=6,
             encryption_type='WPA2',
-            is_open=False
+            is_open=False,
         )
 
         result = card.connect(network, password='secret123')
@@ -165,14 +156,11 @@ class TestWifiCardConnect:
             signal_strength=80,
             channel=6,
             encryption_type='',
-            is_open=True
+            is_open=True,
         )
 
         # Make nmcli connect fail
-        mock_run.return_value = Mock(
-            returncode=1,
-            stderr='Connection failed'
-        )
+        mock_run.return_value = Mock(returncode=1, stderr='Connection failed')
 
         result = card.connect(network)
 
@@ -191,7 +179,7 @@ class TestWifiCardConnect:
             signal_strength=80,
             channel=6,
             encryption_type='',
-            is_open=True
+            is_open=True,
         )
 
         # Simulate timeout
@@ -223,10 +211,7 @@ class TestWifiCardDisconnect:
         mock_run.return_value = Mock(returncode=0)
         card = WifiCard('wlan0')
 
-        mock_run.return_value = Mock(
-            returncode=1,
-            stderr='Disconnect failed'
-        )
+        mock_run.return_value = Mock(returncode=1, stderr='Disconnect failed')
 
         result = card.disconnect()
 
