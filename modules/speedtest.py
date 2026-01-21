@@ -1,10 +1,9 @@
-import logging
-
 import speedtest
 
+from logging_config import get_logger
 from vasili import ConnectionModule, WifiNetwork, ConnectionResult
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class SpeedtestModule(ConnectionModule):

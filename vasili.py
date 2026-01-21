@@ -4,7 +4,6 @@
 
 import importlib
 import inspect
-import logging
 import os
 import queue
 import subprocess
@@ -21,10 +20,12 @@ from flask import Flask, jsonify, render_template, request
 from pyarchops_dnsmasq import dnsmasq
 
 from config import VasiliConfig, apply_logging_config, load_config
+from logging_config import setup_logging, get_logger
 
-# Configure logging (will be updated by config)
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# Configure logging with structured output, configurable levels, and file support
+# Set VASILI_LOG_LEVEL, VASILI_LOG_FILE, VASILI_LOG_FORMAT environment variables to customize
+setup_logging()
+logger = get_logger(__name__)
 
 # Global config - loaded at startup
 _config: Optional[VasiliConfig] = None
