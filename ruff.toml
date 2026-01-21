@@ -1,0 +1,26 @@
+# Ruff configuration for Vasili
+# https://docs.astral.sh/ruff/configuration/
+
+target-version = "py311"
+line-length = 100
+
+[lint]
+# Start with essential rules, expand over time
+select = [
+    "E",      # pycodestyle errors
+    "F",      # pyflakes
+    "I",      # isort
+    "UP",     # pyupgrade
+]
+
+ignore = [
+    "E501",   # line too long (handled by formatter)
+]
+
+[lint.per-file-ignores]
+# Modules may have unused imports for re-export
+"modules/*.py" = ["F401"]
+
+[format]
+quote-style = "single"
+indent-style = "space"
