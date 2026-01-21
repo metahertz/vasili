@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Vasili - WiFi Manager</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #1a1a2e;
+            color: #eee;
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+        }
+
+        h1 {
+            text-align: center;
+            margin-bottom: 30px;
+            color: #00d4ff;
+        }
+
+        .status-panel {
+            background: #16213e;
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+
+        .status-panel h2 {
+            margin-bottom: 15px;
+            color: #00d4ff;
+            font-size: 1.2em;
+        }
+
+        .status-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 15px;
+        }
+
+        .status-item {
+            background: #0f3460;
+            padding: 15px;
+            border-radius: 8px;
+            text-align: center;
+        }
+
+        .status-item .label {
+            font-size: 0.85em;
+            color: #aaa;
+            margin-bottom: 5px;
+        }
+
+        .status-item .value {
+            font-size: 1.3em;
+            font-weight: bold;
+        }
+
+        .status-item .value.active {
+            color: #00ff88;
+        }
+
+        .status-item .value.inactive {
+            color: #ff6b6b;
+        }
+
+        .bridge-info {
+            background: #0f3460;
+            padding: 15px;
+            border-radius: 8px;
+            margin-top: 15px;
+        }
+
+        .bridge-info h3 {
+            color: #00ff88;
+            margin-bottom: 10px;
+            font-size: 1em;
+        }
+
+        .bridge-info p {
+            font-size: 0.9em;
+            color: #ccc;
+            margin: 5px 0;
+        }
+
+        .connections-panel {
+            background: #16213e;
+            border-radius: 12px;
+            padding: 20px;
+        }
+
+        .connections-panel h2 {
+            margin-bottom: 15px;
+            color: #00d4ff;
+            font-size: 1.2em;
+        }
+
+        .connection-list {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .connection-card {
+            background: #0f3460;
+            border-radius: 8px;
+            padding: 15px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            transition: background 0.2s;
+        }
+
+        .connection-card:hover {
+            background: #1a4a7a;
+        }
+
+        .connection-info {
+            flex: 1;
+        }
+
+        .connection-ssid {
+            font-size: 1.1em;
+            font-weight: bold;
+            margin-bottom: 8px;
+        }
+
+        .connection-details {
+            display: flex;
+            gap: 20px;
+            font-size: 0.85em;
+            color: #aaa;
+        }
+
+        .connection-details span {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+
+        .signal-bar {
+            display: inline-flex;
+            gap: 2px;
+            margin-left: 5px;
+        }
+
+        .signal-bar .bar {
+            width: 4px;
+            background: #444;
+            border-radius: 2px;
+        }
+
+        .signal-bar .bar.active {
+            background: #00ff88;
+        }
+
+        .signal-bar .bar:nth-child(1) { height: 6px; }
+        .signal-bar .bar:nth-child(2) { height: 10px; }
+        .signal-bar .bar:nth-child(3) { height: 14px; }
+        .signal-bar .bar:nth-child(4) { height: 18px; }
+
+        .btn {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.9em;
+            font-weight: bold;
+            transition: all 0.2s;
+        }
+
+        .btn-connect {
+            background: #00d4ff;
+            color: #1a1a2e;
+        }
+
+        .btn-connect:hover {
+            background: #00a8cc;
+        }
+
+        .btn-disconnect {
+            background: #ff6b6b;
+            color: #fff;
+        }
+
+        .btn-disconnect:hover {
+            background: #ee5a5a;
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 40px;
+            color: #666;
+        }
+
+        .speed-stats {
+            display: flex;
+            gap: 15px;
+            margin-top: 5px;
+        }
+
+        .speed-stat {
+            font-size: 0.85em;
+        }
+
+        .speed-stat .download {
+            color: #00ff88;
+        }
+
+        .speed-stat .upload {
+            color: #00d4ff;
+        }
+
+        .speed-stat .ping {
+            color: #ffcc00;
+        }
+
+        .refresh-btn {
+            background: transparent;
+            border: 1px solid #00d4ff;
+            color: #00d4ff;
+            padding: 8px 15px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.85em;
+            margin-left: auto;
+        }
+
+        .refresh-btn:hover {
+            background: #00d4ff22;
+        }
+
+        .header-row {
+            display: flex;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+
+        .header-row h2 {
+            margin-bottom: 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Vasili</h1>
+
+        <div class="status-panel">
+            <h2>System Status</h2>
+            <div class="status-grid">
+                <div class="status-item">
+                    <div class="label">Scanning</div>
+                    <div class="value {{ 'active' if status.scanning else 'inactive' }}">
+                        {{ 'Active' if status.scanning else 'Idle' }}
+                    </div>
+                </div>
+                <div class="status-item">
+                    <div class="label">Cards In Use</div>
+                    <div class="value">{{ status.cards_in_use }}</div>
+                </div>
+                <div class="status-item">
+                    <div class="label">Active Modules</div>
+                    <div class="value">{{ status.active_modules }}</div>
+                </div>
+            </div>
+
+            {% if status.current_bridge %}
+            <div class="bridge-info">
+                <h3>Active Bridge</h3>
+                <p><strong>SSID:</strong> {{ status.current_bridge.ssid }}</p>
+                <p><strong>WiFi Interface:</strong> {{ status.current_bridge.wifi_interface }}</p>
+                <p><strong>Ethernet Interface:</strong> {{ status.current_bridge.ethernet_interface }}</p>
+                <button class="btn btn-disconnect" onclick="stopConnection()">Disconnect</button>
+            </div>
+            {% endif %}
+        </div>
+
+        <div class="connections-panel">
+            <div class="header-row">
+                <h2>Available Connections</h2>
+                <button class="refresh-btn" onclick="refreshConnections()">Refresh</button>
+            </div>
+
+            <div class="connection-list" id="connection-list">
+                {% if connections %}
+                    {% for conn in connections %}
+                    <div class="connection-card">
+                        <div class="connection-info">
+                            <div class="connection-ssid">
+                                {{ conn.network.ssid or '(Hidden Network)' }}
+                                {% if conn.connected %}
+                                    <span style="color: #00ff88; font-size: 0.8em;">Connected</span>
+                                {% endif %}
+                            </div>
+                            <div class="connection-details">
+                                <span>
+                                    Signal:
+                                    <span class="signal-bar">
+                                        <span class="bar {{ 'active' if conn.network.signal_strength > 0 else '' }}"></span>
+                                        <span class="bar {{ 'active' if conn.network.signal_strength > 25 else '' }}"></span>
+                                        <span class="bar {{ 'active' if conn.network.signal_strength > 50 else '' }}"></span>
+                                        <span class="bar {{ 'active' if conn.network.signal_strength > 75 else '' }}"></span>
+                                    </span>
+                                    {{ conn.network.signal_strength }}%
+                                </span>
+                                <span>{{ conn.network.encryption_type or 'Open' }}</span>
+                                <span>Ch {{ conn.network.channel }}</span>
+                                <span>{{ conn.connection_method }}</span>
+                            </div>
+                            {% if conn.connected %}
+                            <div class="speed-stats">
+                                <span class="speed-stat">
+                                    <span class="download">{{ "%.1f"|format(conn.download_speed) }} Mbps</span>
+                                </span>
+                                <span class="speed-stat">
+                                    <span class="upload">{{ "%.1f"|format(conn.upload_speed) }} Mbps</span>
+                                </span>
+                                <span class="speed-stat">
+                                    <span class="ping">{{ "%.0f"|format(conn.ping) }} ms</span>
+                                </span>
+                            </div>
+                            {% endif %}
+                        </div>
+                        <button class="btn btn-connect" onclick="useConnection({{ loop.index0 }})">
+                            Use
+                        </button>
+                    </div>
+                    {% endfor %}
+                {% else %}
+                    <div class="empty-state">
+                        <p>No connections available yet.</p>
+                        <p>The system is scanning for networks...</p>
+                    </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+
+    <script>
+        function useConnection(index) {
+            fetch('/api/use_connection/' + index, {
+                method: 'POST'
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    location.reload();
+                } else {
+                    alert('Failed to connect. Please try again.');
+                }
+            })
+            .catch(err => {
+                alert('Error: ' + err.message);
+            });
+        }
+
+        function stopConnection() {
+            fetch('/api/stop_connection', {
+                method: 'POST'
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    location.reload();
+                }
+            })
+            .catch(err => {
+                alert('Error: ' + err.message);
+            });
+        }
+
+        function refreshConnections() {
+            location.reload();
+        }
+
+        // Auto-refresh every 30 seconds
+        setTimeout(function() {
+            location.reload();
+        }, 30000);
+    </script>
+</body>
+</html>
