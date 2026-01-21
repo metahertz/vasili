@@ -200,6 +200,90 @@ class WifiCard:
             logger.error(f"Scan failed on interface {self.interface}: {e}")
             return []
 
+    def connect(self, network: WifiNetwork, password: Optional[str] = None) -> bool:
+        """
+        Connect to a WiFi network using this card.
+
+        Args:
+            network: The WifiNetwork to connect to
+            password: Optional password for encrypted networks
+
+        Returns:
+            True if connection successful, False otherwise
+        """
+        try:
+            # Bring interface up
+            subprocess.run(['ip', 'link', 'set', self.interface, 'up'], check=True)
+
+            # Disconnect from any current network first
+            subprocess.run(
+                ['nmcli', 'device', 'disconnect', self.interface],
+                capture_output=True
+            )
+
+            # Build the nmcli command
+            cmd = ['nmcli', 'device', 'wifi', 'connect', network.ssid]
+
+            # Add password if provided (for encrypted networks)
+            if password:
+                cmd.extend(['password', password])
+            elif not network.is_open:
+                # For encrypted networks without a password, try connecting anyway
+                # nmcli may have saved credentials from a previous connection
+                logger.info(f"Attempting to connect to encrypted network {network.ssid} using saved credentials")
+
+            # Specify the interface to use
+            cmd.extend(['ifname', self.interface])
+
+            # Optionally specify BSSID for more precise connection
+            if network.bssid:
+                cmd.extend(['bssid', network.bssid])
+
+            # Execute the connection command
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+
+            if result.returncode == 0:
+                logger.info(f"Successfully connected to {network.ssid} on {self.interface}")
+                self.in_use = True
+                return True
+            else:
+                logger.error(f"Failed to connect to {network.ssid}: {result.stderr}")
+                return False
+
+        except subprocess.TimeoutExpired:
+            logger.error(f"Connection to {network.ssid} timed out")
+            return False
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Connection failed on {self.interface}: {e}")
+            return False
+        except Exception as e:
+            logger.error(f"Unexpected error connecting to {network.ssid}: {e}")
+            return False
+
+    def disconnect(self) -> bool:
+        """Disconnect from the current network."""
+        try:
+            result = subprocess.run(
+                ['nmcli', 'device', 'disconnect', self.interface],
+                capture_output=True,
+                text=True
+            )
+            if result.returncode == 0:
+                logger.info(f"Disconnected {self.interface}")
+                self.in_use = False
+                return True
+            else:
+                logger.error(f"Failed to disconnect {self.interface}: {result.stderr}")
+                return False
+        except Exception as e:
+            logger.error(f"Error disconnecting {self.interface}: {e}")
+            return False
+
     def get_status(self) -> Dict:
         """Get current status of the wifi card"""
         return {
