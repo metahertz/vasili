@@ -1,8 +1,11 @@
 import logging
+
 import speedtest
+
 from vasili import ConnectionModule, WifiNetwork, ConnectionResult
 
 logger = logging.getLogger(__name__)
+
 
 class SpeedtestModule(ConnectionModule):
     def __init__(self, card_manager):
@@ -18,15 +21,15 @@ class SpeedtestModule(ConnectionModule):
             # Get a wifi card
             card = self.card_manager.get_card()
             if not card:
-                logger.error("No wifi cards available")
+                logger.error('No wifi cards available')
                 return ConnectionResult(
                     network=network,
                     download_speed=0,
-                    upload_speed=0, 
+                    upload_speed=0,
                     ping=0,
                     connected=False,
-                    connection_method="speedtest",
-                    interface=""
+                    connection_method='speedtest',
+                    interface='',
                 )
 
             # Run speedtest
@@ -41,18 +44,18 @@ class SpeedtestModule(ConnectionModule):
                 upload_speed=upload_speed,
                 ping=ping,
                 connected=True,
-                connection_method="speedtest",
-                interface=card.interface
+                connection_method='speedtest',
+                interface=card.interface,
             )
 
         except Exception as e:
-            logger.error(f"Speedtest failed: {e}")
+            logger.error(f'Speedtest failed: {e}')
             return ConnectionResult(
                 network=network,
                 download_speed=0,
                 upload_speed=0,
-                ping=0, 
+                ping=0,
                 connected=False,
-                connection_method="speedtest",
-                interface=""
+                connection_method='speedtest',
+                interface='',
             )
