@@ -1,13 +1,13 @@
 """Pytest configuration and shared fixtures."""
 
 import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 from tests.fixtures.mock_helpers import (
     SubprocessMockFactory,
     FileIOMockFactory,
     SpeedtestMockFactory,
 )
-from tests.fixtures.mock_data import SAMPLE_INTERFACES, WIRELESS_INTERFACES
+from tests.fixtures.mock_data import SAMPLE_INTERFACES
 
 
 @pytest.fixture
@@ -21,7 +21,7 @@ def mock_subprocess():
 @pytest.fixture
 def mock_subprocess_scan_empty():
     """Mock subprocess.run with empty scan results."""
-    side_effect = SubprocessMockFactory.create_mock(scan_output="wlan0     Scan completed :\n")
+    side_effect = SubprocessMockFactory.create_mock(scan_output='wlan0     Scan completed :\n')
     with patch('subprocess.run', side_effect=side_effect) as mock:
         yield mock
 
@@ -87,9 +87,12 @@ def all_mocks(mock_subprocess, mock_netifaces, mock_speedtest, mock_file_io):
 @pytest.fixture
 def mock_iptc():
     """Mock iptc library used by NetworkBridge."""
-    with patch('iptc.Chain') as mock_chain, patch('iptc.Rule') as mock_rule, patch(
-        'iptc.Target'
-    ) as mock_target, patch('iptc.Table') as mock_table:
+    with (
+        patch('iptc.Chain') as mock_chain,
+        patch('iptc.Rule') as mock_rule,
+        patch('iptc.Target') as mock_target,
+        patch('iptc.Table') as mock_table,
+    ):
         yield {
             'chain': mock_chain,
             'rule': mock_rule,

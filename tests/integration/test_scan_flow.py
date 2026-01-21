@@ -1,7 +1,7 @@
 """Integration tests for WiFi scanning flow."""
 
 import pytest
-from vasili import WifiCardManager, WifiCard, WifiNetwork
+from vasili import WifiCardManager
 
 
 @pytest.mark.integration

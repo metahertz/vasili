@@ -159,7 +159,7 @@ class TestNetworkScanner:
         scanner = NetworkScanner(manager)
 
         # Patch scan to raise an exception
-        with patch.object(manager.cards[0], 'scan', side_effect=Exception("Scan error")):
+        with patch.object(manager.cards[0], 'scan', side_effect=Exception('Scan error')):
             scanner.start_scan()
             time.sleep(0.2)
 

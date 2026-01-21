@@ -4,7 +4,6 @@ from subprocess import CompletedProcess
 from unittest.mock import MagicMock
 from tests.fixtures.mock_data import (
     IWLIST_SCAN_OUTPUT,
-    IWLIST_SCAN_EMPTY,
     IWCONFIG_OUTPUT_VALID,
     NMCLI_CONNECT_SUCCESS,
     NMCLI_CONNECT_FAILURE,
@@ -131,7 +130,7 @@ class FileIOMockFactory:
                 return mock_file
 
             # For other files, raise FileNotFoundError
-            raise FileNotFoundError(f"No such file: {file}")
+            raise FileNotFoundError(f'No such file: {file}')
 
         return side_effect
 
