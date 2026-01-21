@@ -406,7 +406,84 @@ class WifiManager:
             self.active_bridge.stop()
             self.status['current_bridge'] = None
 
-    # ... [Rest of WifiManager methods remain the same] ...
+    def scan_and_connect(self):
+        """
+        Main loop that scans for networks and attempts connections via modules.
+
+        This method runs continuously in a background thread. It:
+        1. Starts the network scanner
+        2. Waits for scan results
+        3. For each discovered network, checks which modules can connect
+        4. Attempts connections and stores successful results
+        """
+        logger.info("Starting scan_and_connect loop")
+        self.status['scanning'] = True
+
+        # Start the background scanner
+        self.scanner.start_scan()
+
+        try:
+            while True:
+                # Wait for scan results
+                try:
+                    networks = self.scanner.get_next_scan()
+                    logger.info(f"Scan found {len(networks)} networks")
+                except Exception as e:
+                    logger.error(f"Error getting scan results: {e}")
+                    time.sleep(5)
+                    continue
+
+                # Update status with cards in use
+                self.status['cards_in_use'] = sum(
+                    1 for card in self.card_manager.get_all_cards() if card.in_use
+                )
+                self.status['active_modules'] = len(self.modules)
+
+                # Try to connect to each network using available modules
+                for network in networks:
+                    # Skip networks we've already successfully connected to
+                    already_connected = any(
+                        conn.network.bssid == network.bssid and conn.connected
+                        for conn in self.suitable_connections
+                    )
+                    if already_connected:
+                        continue
+
+                    # Find modules that can connect to this network
+                    for module in self.modules:
+                        try:
+                            if module.can_connect(network):
+                                logger.info(
+                                    f"Module {module.__class__.__name__} attempting "
+                                    f"connection to {network.ssid}"
+                                )
+                                result = module.connect(network)
+
+                                if result.connected:
+                                    logger.info(
+                                        f"Successfully connected to {network.ssid} "
+                                        f"via {module.__class__.__name__}"
+                                    )
+                                    self.suitable_connections.append(result)
+                                    # Only need one successful connection per network
+                                    break
+                                else:
+                                    logger.warning(
+                                        f"Module {module.__class__.__name__} failed to "
+                                        f"connect to {network.ssid}"
+                                    )
+                        except Exception as e:
+                            logger.error(
+                                f"Error with module {module.__class__.__name__} "
+                                f"on network {network.ssid}: {e}"
+                            )
+
+        except Exception as e:
+            logger.error(f"scan_and_connect loop error: {e}")
+        finally:
+            self.scanner.stop_scan()
+            self.status['scanning'] = False
+            logger.info("scan_and_connect loop stopped")
 
 # Flask web interface
 app = Flask(__name__)
