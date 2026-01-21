@@ -1,9 +1,7 @@
 """Unit tests for NetworkScanner class"""
 
-import time
-from unittest.mock import MagicMock, Mock, patch
+from unittest.mock import Mock, patch
 
-import pytest
 
 from vasili import NetworkScanner, WifiCard, WifiCardManager, WifiNetwork
 

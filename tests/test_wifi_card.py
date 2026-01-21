@@ -1,7 +1,7 @@
 """Unit tests for WifiCard class"""
 
 import subprocess
-from unittest.mock import MagicMock, Mock, mock_open, patch
+from unittest.mock import Mock, mock_open, patch
 
 import pytest
 
