@@ -22,7 +22,9 @@ class TestWifiCard:
     def test_init_invalid_interface(self):
         """Test WifiCard initialization with invalid interface."""
         with patch('subprocess.run') as mock_run:
-            mock_run.side_effect = CalledProcessError(1, 'iwconfig', stderr='no wireless extensions')
+            mock_run.side_effect = CalledProcessError(
+                1, 'iwconfig', stderr='no wireless extensions'
+            )
             with pytest.raises(ValueError, match='not a valid wireless device'):
                 WifiCard('eth0')
 

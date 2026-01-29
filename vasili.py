@@ -569,6 +569,7 @@ class WifiCard:
         logger.error(
             f'Failed to connect to {network.ssid} after {max_retries} attempts. Last error: {last_error}'
         )
+        self.in_use = False
         return False
 
     def disconnect(self) -> bool:
