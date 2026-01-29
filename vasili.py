@@ -822,6 +822,7 @@ class NetworkScanner:
         scan_interval = config.scanner.scan_interval
 
         while self.scanning:
+            card = None
             try:
                 # Get an available wifi card
                 card = self.card_manager.lease_card()
@@ -835,15 +836,16 @@ class NetworkScanner:
                 self.scan_results = networks
                 self.scan_queue.put(networks)
 
-                # Return the card
-                self.card_manager.return_card(card)
-
                 # Wait before scanning again
                 time.sleep(scan_interval)
 
             except Exception as e:
                 logger.error(f'Error during network scan: {e}')
                 time.sleep(1)
+            finally:
+                # Always return the card if we leased one
+                if card:
+                    self.card_manager.return_card(card)
 
     def get_scan_results(self) -> list[WifiNetwork]:
         """Get the most recent scan results"""
