@@ -6,3 +6,4 @@ python-iptables
 dataclasses
 typing
 pyyaml
+pyarchops-dnsmasq
