@@ -457,10 +457,39 @@ class WifiCard:
                         current_network.ssid = line.split('ESSID:')[1].strip('"')
                     elif 'Channel:' in line:
                         current_network.channel = int(line.split(':')[1])
-                    elif 'Signal level=' in line:
-                        # Convert dBm to percentage (approximate)
-                        dbm = int(line.split('Signal level=')[1].split(' ')[0])
-                        current_network.signal_strength = min(100, max(0, (dbm + 100) * 2))
+                    elif 'Quality=' in line or 'Signal level=' in line:
+                        # Handle both quality format (X/100) and dBm format
+                        try:
+                            if 'Quality=' in line:
+                                # Format: "Quality=51/100  Signal level=-59 dBm"
+                                quality_str = line.split('Quality=')[1].split()[0]
+                                if '/' in quality_str:
+                                    numerator, denominator = quality_str.split('/')
+                                    current_network.signal_strength = int(
+                                        (int(numerator) / int(denominator)) * 100
+                                    )
+                                else:
+                                    current_network.signal_strength = int(quality_str)
+                            elif 'Signal level=' in line:
+                                # Format: "Signal level=-59 dBm" or "Signal level=51/100"
+                                signal_str = line.split('Signal level=')[1].split()[0]
+                                if '/' in signal_str:
+                                    # Quality format
+                                    numerator, denominator = signal_str.split('/')
+                                    current_network.signal_strength = int(
+                                        (int(numerator) / int(denominator)) * 100
+                                    )
+                                else:
+                                    # dBm format - convert to percentage
+                                    dbm = int(signal_str)
+                                    current_network.signal_strength = min(
+                                        100, max(0, (dbm + 100) * 2)
+                                    )
+                        except (ValueError, IndexError) as e:
+                            logger.warning(
+                                f'Failed to parse signal strength from line: {line} - {e}'
+                            )
+                            current_network.signal_strength = 0
                     elif 'Encryption key:' in line:
                         current_network.is_open = 'off' in line.lower()
                     elif 'IE: IEEE 802.11i/WPA2' in line:
