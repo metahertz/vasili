@@ -114,7 +114,23 @@ fi
 log_info "Checking remote user privileges..."
 NEEDS_SUDO=$(ssh -p "$REMOTE_PORT" "$REMOTE_USER@$REMOTE_HOST" 'if [ "$(id -u)" -eq 0 ]; then echo "no"; else echo "yes"; fi')
 if [ "$NEEDS_SUDO" = "yes" ]; then
-    log_info "Non-root user detected, will use sudo for privileged operations"
+    log_info "Non-root user detected, checking sudo configuration..."
+
+    # Check if passwordless sudo is configured
+    if ! ssh -p "$REMOTE_PORT" "$REMOTE_USER@$REMOTE_HOST" 'sudo -n true 2>/dev/null'; then
+        log_error "Sudo requires a password for user $REMOTE_USER"
+        log_error ""
+        log_error "Please configure passwordless sudo on the remote host:"
+        log_error "  1. SSH to the remote host: ssh $REMOTE_USER@$REMOTE_HOST"
+        log_error "  2. Run: sudo visudo"
+        log_error "  3. Add this line: $REMOTE_USER ALL=(ALL) NOPASSWD: ALL"
+        log_error "  4. Save and exit"
+        log_error ""
+        log_error "Alternatively, run this script as root user: $0 $REMOTE_HOST -u root"
+        exit 1
+    fi
+
+    log_info "Passwordless sudo confirmed, will use sudo for privileged operations"
     SUDO="sudo"
 else
     log_info "Running as root user"
