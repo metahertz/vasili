@@ -110,9 +110,20 @@ if ! ssh -p "$REMOTE_PORT" -o ConnectTimeout=10 -o BatchMode=yes "$REMOTE_USER@$
     exit 1
 fi
 
+# Detect if remote user needs sudo
+log_info "Checking remote user privileges..."
+NEEDS_SUDO=$(ssh -p "$REMOTE_PORT" "$REMOTE_USER@$REMOTE_HOST" 'if [ "$(id -u)" -eq 0 ]; then echo "no"; else echo "yes"; fi')
+if [ "$NEEDS_SUDO" = "yes" ]; then
+    log_info "Non-root user detected, will use sudo for privileged operations"
+    SUDO="sudo"
+else
+    log_info "Running as root user"
+    SUDO=""
+fi
+
 # Create remote directory
 log_info "Creating remote directory structure..."
-ssh -p "$REMOTE_PORT" "$REMOTE_USER@$REMOTE_HOST" "mkdir -p $REMOTE_DIR/{modules,templates}"
+ssh -p "$REMOTE_PORT" "$REMOTE_USER@$REMOTE_HOST" "$SUDO mkdir -p $REMOTE_DIR/{modules,templates} && $SUDO chown -R $REMOTE_USER:$REMOTE_USER $REMOTE_DIR"
 
 # Transfer files
 log_info "Transferring project files..."
@@ -123,37 +134,62 @@ scp -P "$REMOTE_PORT" templates/*.html "$REMOTE_USER@$REMOTE_HOST:$REMOTE_DIR/te
 
 # Install system dependencies
 log_info "Installing system dependencies..."
-ssh -p "$REMOTE_PORT" "$REMOTE_USER@$REMOTE_HOST" bash <<'ENDSSH'
+ssh -p "$REMOTE_PORT" "$REMOTE_USER@$REMOTE_HOST" bash <<ENDSSH
     set -e
     export DEBIAN_FRONTEND=noninteractive
+    SUDO="$SUDO"
 
     echo "[INFO] Updating package lists..."
-    apt-get update -qq
+    \$SUDO apt-get update -qq
 
     echo "[INFO] Installing system packages..."
-    apt-get install -y -qq \
-        python3 \
-        python3-pip \
-        python3-dev \
-        wireless-tools \
-        network-manager \
-        iptables \
-        dnsmasq \
-        iw \
-        build-essential \
+    \$SUDO apt-get install -y -qq \\
+        python3 \\
+        python3-pip \\
+        python3-dev \\
+        python3-venv \\
+        pipx \\
+        wireless-tools \\
+        network-manager \\
+        iptables \\
+        dnsmasq \\
+        iw \\
+        build-essential \\
         libnetfilter-queue-dev
 
     echo "[INFO] System packages installed successfully"
 ENDSSH
 
-# Install Python dependencies
-log_info "Installing Python dependencies..."
-ssh -p "$REMOTE_PORT" "$REMOTE_USER@$REMOTE_HOST" "cd $REMOTE_DIR && python3 -m pip install --upgrade pip && python3 -m pip install -r requirements.txt"
+# Install Python dependencies using pipx
+log_info "Installing Python dependencies using pipx..."
+ssh -p "$REMOTE_PORT" "$REMOTE_USER@$REMOTE_HOST" bash <<ENDSSH
+    set -e
+
+    # Ensure pipx is in PATH
+    export PATH="\$HOME/.local/bin:\$PATH"
+
+    # Ensure pipx is set up
+    pipx ensurepath || true
+
+    # Install dependencies from requirements.txt into a venv
+    echo "[INFO] Creating virtual environment for vasili..."
+    python3 -m venv $REMOTE_DIR/venv
+
+    echo "[INFO] Installing dependencies via pipx-style isolated environment..."
+    $REMOTE_DIR/venv/bin/pip install --upgrade pip
+    $REMOTE_DIR/venv/bin/pip install -r $REMOTE_DIR/requirements.txt
+
+    echo "[INFO] Python dependencies installed successfully"
+ENDSSH
 
 # Create systemd service file
 log_info "Creating systemd service..."
 ssh -p "$REMOTE_PORT" "$REMOTE_USER@$REMOTE_HOST" bash <<ENDSSH
-    cat > /etc/systemd/system/vasili.service <<'EOF'
+    SUDO="$SUDO"
+    REMOTE_DIR="$REMOTE_DIR"
+    REMOTE_USER="$REMOTE_USER"
+
+    \$SUDO tee /etc/systemd/system/vasili.service > /dev/null <<'EOF'
 [Unit]
 Description=Vasili WiFi Connection Manager
 After=network.target
@@ -162,7 +198,7 @@ After=network.target
 Type=simple
 User=root
 WorkingDirectory=$REMOTE_DIR
-ExecStart=/usr/bin/python3 $REMOTE_DIR/vasili.py
+ExecStart=$REMOTE_DIR/venv/bin/python3 $REMOTE_DIR/vasili.py
 Restart=on-failure
 RestartSec=10
 StandardOutput=journal
@@ -172,7 +208,7 @@ StandardError=journal
 WantedBy=multi-user.target
 EOF
 
-    systemctl daemon-reload
+    \$SUDO systemctl daemon-reload
     echo "[INFO] Systemd service created"
 ENDSSH
 
@@ -180,10 +216,17 @@ ENDSSH
 log_info "Deployment complete!"
 echo ""
 log_info "Next steps:"
-echo "  1. Start vasili:    ssh $REMOTE_USER@$REMOTE_HOST 'systemctl start vasili'"
-echo "  2. Enable on boot:  ssh $REMOTE_USER@$REMOTE_HOST 'systemctl enable vasili'"
-echo "  3. Check status:    ssh $REMOTE_USER@$REMOTE_HOST 'systemctl status vasili'"
-echo "  4. View logs:       ssh $REMOTE_USER@$REMOTE_HOST 'journalctl -u vasili -f'"
+if [ "$NEEDS_SUDO" = "yes" ]; then
+    echo "  1. Start vasili:    ssh $REMOTE_USER@$REMOTE_HOST 'sudo systemctl start vasili'"
+    echo "  2. Enable on boot:  ssh $REMOTE_USER@$REMOTE_HOST 'sudo systemctl enable vasili'"
+    echo "  3. Check status:    ssh $REMOTE_USER@$REMOTE_HOST 'sudo systemctl status vasili'"
+    echo "  4. View logs:       ssh $REMOTE_USER@$REMOTE_HOST 'sudo journalctl -u vasili -f'"
+else
+    echo "  1. Start vasili:    ssh $REMOTE_USER@$REMOTE_HOST 'systemctl start vasili'"
+    echo "  2. Enable on boot:  ssh $REMOTE_USER@$REMOTE_HOST 'systemctl enable vasili'"
+    echo "  3. Check status:    ssh $REMOTE_USER@$REMOTE_HOST 'systemctl status vasili'"
+    echo "  4. View logs:       ssh $REMOTE_USER@$REMOTE_HOST 'journalctl -u vasili -f'"
+fi
 echo "  5. Access web UI:   http://$REMOTE_HOST:5000"
 echo ""
 log_warn "Note: vasili requires root privileges for network management"
