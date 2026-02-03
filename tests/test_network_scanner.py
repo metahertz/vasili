@@ -90,6 +90,7 @@ class TestNetworkScannerScanWorker:
         """Test scan worker performs scan and updates results"""
         mock_card_manager = Mock(spec=WifiCardManager)
         mock_card = Mock(spec=WifiCard)
+        mock_card.interface = 'wlan0'
 
         # Create test networks
         network1 = WifiNetwork(
@@ -160,6 +161,7 @@ class TestNetworkScannerScanWorker:
         """Test scan worker handles exceptions during scan"""
         mock_card_manager = Mock(spec=WifiCardManager)
         mock_card = Mock(spec=WifiCard)
+        mock_card.interface = 'wlan0'
         mock_card.scan.side_effect = Exception('Scan error')
         mock_card_manager.lease_card.return_value = mock_card
 
