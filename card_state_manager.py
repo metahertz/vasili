@@ -7,7 +7,6 @@ across the system using MongoDB as a persistent store.
 
 import time
 from dataclasses import dataclass
-from datetime import datetime
 from enum import Enum
 from typing import Optional
 
@@ -115,7 +114,8 @@ class CardStateManager:
         try:
             connection_string = f'mongodb://{self.config.mongodb.host}:{self.config.mongodb.port}/'
             self._client = MongoClient(
-                connection_string, serverSelectionTimeoutMS=5000  # 5 second timeout
+                connection_string,
+                serverSelectionTimeoutMS=5000,  # 5 second timeout
             )
 
             # Test the connection

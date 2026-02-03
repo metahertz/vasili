@@ -12,7 +12,7 @@ class TestScanFlow:
         """Test complete scan: WifiCardManager → WifiCard.scan() → WifiNetwork[]."""
         # Initialize card manager
         manager = WifiCardManager()
-        assert len(manager.cards) == 2
+        assert len(manager.cards) == 3  # wlan0, wlan1, wlan2
 
         # Lease a card
         card = manager.lease_card()
@@ -61,7 +61,7 @@ class TestScanFlow:
         # Step 1: Discover cards
         manager = WifiCardManager()
         initial_cards = manager.get_all_cards()
-        assert len(initial_cards) == 2
+        assert len(initial_cards) == 3  # wlan0, wlan1, wlan2
 
         # Step 2: Lease card
         card = manager.lease_card()

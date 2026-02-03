@@ -13,8 +13,8 @@ from unittest.mock import MagicMock
 # Mock iptc at module level before importing vasili
 sys.modules['iptc'] = MagicMock()
 
-from config import VasiliConfig, InterfaceConfig, MongoDBConfig
-from vasili import WifiCardManager
+from config import VasiliConfig, InterfaceConfig, MongoDBConfig  # noqa: E402
+from vasili import WifiCardManager  # noqa: E402
 
 
 @pytest.fixture

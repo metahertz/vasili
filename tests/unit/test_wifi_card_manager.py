@@ -13,15 +13,15 @@ class TestWifiCardManager:
     def test_init_scans_for_cards(self, mock_subprocess, mock_netifaces):
         """Test that WifiCardManager initializes and scans for cards."""
         manager = WifiCardManager()
-        assert len(manager.cards) == 2  # wlan0 and wlan1 from SAMPLE_INTERFACES
+        assert len(manager.cards) == 3  # wlan0, wlan1, wlan2 from SAMPLE_INTERFACES
 
     def test_scan_for_cards_finds_wireless_only(self, mock_subprocess, mock_netifaces):
         """Test that scan_for_cards only finds wireless interfaces."""
         manager = WifiCardManager()
         manager.scan_for_cards()
 
-        # Should find wlan0 and wlan1, but not lo or eth0
-        assert len(manager.cards) == 2
+        # Should find wlan0, wlan1, wlan2, but not lo or eth0
+        assert len(manager.cards) == 3
         assert all(card.interface.startswith('wlan') for card in manager.cards)
 
     def test_scan_for_cards_no_wireless(self, mock_subprocess, mock_netifaces_no_wireless):
@@ -52,13 +52,14 @@ class TestWifiCardManager:
         assert card2.in_use is True
 
     def test_lease_card_returns_none_when_all_busy(self, mock_subprocess, mock_netifaces):
-        """Test that lease_card returns None when all cards are in use."""
+        """Test that lease_card returns None when all connection cards are in use."""
         manager = WifiCardManager()
 
-        # Lease all cards
+        # With 3 WiFi cards: wlan0 is scanning, wlan1 and wlan2 are connection cards
+        # Lease all connection cards
         card1 = manager.lease_card()
         card2 = manager.lease_card()
-        card3 = manager.lease_card()  # Should be None
+        card3 = manager.lease_card()  # Should be None (no more connection cards)
 
         assert card1 is not None
         assert card2 is not None
@@ -78,9 +79,10 @@ class TestWifiCardManager:
         """Test that returned cards can be leased again."""
         manager = WifiCardManager()
 
+        # With 3 WiFi cards: wlan0 is scanning, wlan1 and wlan2 are connection cards
         card1 = manager.lease_card()
         card2 = manager.lease_card()
-        card3 = manager.lease_card()  # None, all busy
+        card3 = manager.lease_card()  # None, all connection cards busy
 
         assert card3 is None
 
@@ -111,7 +113,7 @@ class TestWifiCardManager:
         manager = WifiCardManager()
 
         cards = manager.get_all_cards()
-        assert len(cards) == 2
+        assert len(cards) == 3
         assert all(isinstance(card, WifiCard) for card in cards)
 
     def test_thread_safety_lease_return(self, mock_subprocess, mock_netifaces):
