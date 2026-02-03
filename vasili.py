@@ -18,6 +18,8 @@ import speedtest
 import wifi
 from flask import Flask, jsonify, render_template, request
 from pyarchops_dnsmasq import dnsmasq
+from pymongo import MongoClient, DESCENDING
+from pymongo.errors import ConnectionFailure, OperationFailure
 
 from config import VasiliConfig, apply_logging_config, load_config
 from logging_config import setup_logging, get_logger
@@ -175,6 +177,214 @@ class ConnectionResult:
     connected: bool
     connection_method: str
     interface: str
+
+    def calculate_score(self) -> float:
+        """
+        Calculate a connection quality score (0-100) based on:
+        - Download speed (40% weight)
+        - Signal strength (30% weight)
+        - Upload speed (20% weight)
+        - Ping/latency (10% weight - lower is better)
+
+        Returns:
+            A score from 0 to 100, where higher is better
+        """
+        # Normalize download speed (assume 100 Mbps as reference excellent speed)
+        download_score = min(100, (self.download_speed / 100.0) * 100)
+
+        # Signal strength is already 0-100
+        signal_score = self.network.signal_strength
+
+        # Normalize upload speed (assume 50 Mbps as reference excellent speed)
+        upload_score = min(100, (self.upload_speed / 50.0) * 100)
+
+        # Normalize ping (lower is better, 0ms=100, 200ms+=0)
+        ping_score = max(0, 100 - (self.ping / 2.0))
+
+        # Weighted average
+        total_score = (
+            download_score * 0.4 +
+            signal_score * 0.3 +
+            upload_score * 0.2 +
+            ping_score * 0.1
+        )
+
+        return round(total_score, 2)
+
+
+class PerformanceMetricsStore:
+    """
+    Store and retrieve WiFi connection performance metrics in MongoDB.
+    Gracefully handles MongoDB unavailability.
+    """
+
+    def __init__(self, mongo_uri: str = "mongodb://localhost:27017/", db_name: str = "vasili"):
+        """
+        Initialize the metrics store.
+
+        Args:
+            mongo_uri: MongoDB connection URI
+            db_name: Database name to use
+        """
+        self.mongo_uri = mongo_uri
+        self.db_name = db_name
+        self.client: Optional[MongoClient] = None
+        self.db = None
+        self.metrics_collection = None
+        self._available = False
+
+        try:
+            self.client = MongoClient(mongo_uri, serverSelectionTimeoutMS=2000)
+            # Test connection
+            self.client.admin.command('ping')
+            self.db = self.client[db_name]
+            self.metrics_collection = self.db['connection_metrics']
+            self._available = True
+            logger.info(f"Connected to MongoDB at {mongo_uri}")
+
+            # Create indexes for efficient queries
+            self.metrics_collection.create_index([("ssid", 1), ("timestamp", DESCENDING)])
+            self.metrics_collection.create_index([("bssid", 1)])
+        except (ConnectionFailure, OperationFailure) as e:
+            logger.warning(f"MongoDB not available: {e}. Metrics storage disabled.")
+            self._available = False
+        except Exception as e:
+            logger.error(f"Failed to initialize MongoDB: {e}. Metrics storage disabled.")
+            self._available = False
+
+    def is_available(self) -> bool:
+        """Check if MongoDB is available."""
+        return self._available
+
+    def store_metrics(self, connection: ConnectionResult) -> bool:
+        """
+        Store connection metrics to MongoDB.
+
+        Args:
+            connection: ConnectionResult containing performance data
+
+        Returns:
+            True if stored successfully, False otherwise
+        """
+        if not self._available:
+            return False
+
+        try:
+            metric = {
+                'ssid': connection.network.ssid,
+                'bssid': connection.network.bssid,
+                'signal_strength': connection.network.signal_strength,
+                'channel': connection.network.channel,
+                'encryption_type': connection.network.encryption_type,
+                'download_speed': connection.download_speed,
+                'upload_speed': connection.upload_speed,
+                'ping': connection.ping,
+                'connection_method': connection.connection_method,
+                'interface': connection.interface,
+                'score': connection.calculate_score(),
+                'timestamp': time.time(),
+                'connected': connection.connected
+            }
+
+            self.metrics_collection.insert_one(metric)
+            logger.debug(f"Stored metrics for {connection.network.ssid} (score: {metric['score']})")
+            return True
+
+        except Exception as e:
+            logger.error(f"Failed to store metrics: {e}")
+            return False
+
+    def get_network_history(self, ssid: str, limit: int = 10) -> list[dict]:
+        """
+        Get historical metrics for a specific network.
+
+        Args:
+            ssid: Network SSID to query
+            limit: Maximum number of records to return
+
+        Returns:
+            List of metric dictionaries, newest first
+        """
+        if not self._available:
+            return []
+
+        try:
+            cursor = self.metrics_collection.find(
+                {'ssid': ssid}
+            ).sort('timestamp', DESCENDING).limit(limit)
+            return list(cursor)
+        except Exception as e:
+            logger.error(f"Failed to retrieve network history: {e}")
+            return []
+
+    def get_average_score(self, ssid: str) -> Optional[float]:
+        """
+        Calculate average score for a network based on historical data.
+
+        Args:
+            ssid: Network SSID
+
+        Returns:
+            Average score or None if no data available
+        """
+        if not self._available:
+            return None
+
+        try:
+            pipeline = [
+                {'$match': {'ssid': ssid, 'connected': True}},
+                {'$group': {
+                    '_id': '$ssid',
+                    'avg_score': {'$avg': '$score'},
+                    'count': {'$sum': 1}
+                }}
+            ]
+            result = list(self.metrics_collection.aggregate(pipeline))
+            if result:
+                return round(result[0]['avg_score'], 2)
+            return None
+        except Exception as e:
+            logger.error(f"Failed to calculate average score: {e}")
+            return None
+
+    def get_best_networks(self, limit: int = 5) -> list[dict]:
+        """
+        Get the best performing networks based on average scores.
+
+        Args:
+            limit: Number of networks to return
+
+        Returns:
+            List of networks with their average scores
+        """
+        if not self._available:
+            return []
+
+        try:
+            pipeline = [
+                {'$match': {'connected': True}},
+                {'$group': {
+                    '_id': '$ssid',
+                    'avg_score': {'$avg': '$score'},
+                    'avg_download': {'$avg': '$download_speed'},
+                    'avg_upload': {'$avg': '$upload_speed'},
+                    'avg_ping': {'$avg': '$ping'},
+                    'avg_signal': {'$avg': '$signal_strength'},
+                    'connection_count': {'$sum': 1}
+                }},
+                {'$sort': {'avg_score': -1}},
+                {'$limit': limit}
+            ]
+            return list(self.metrics_collection.aggregate(pipeline))
+        except Exception as e:
+            logger.error(f"Failed to get best networks: {e}")
+            return []
+
+    def close(self):
+        """Close the MongoDB connection."""
+        if self.client:
+            self.client.close()
+            logger.info("MongoDB connection closed")
 
 
 class NetworkBridge:
@@ -1042,6 +1252,7 @@ class WifiManager:
         self.connection_monitor = ConnectionMonitor()
         self.modules = self._load_connection_modules()
         self.suitable_connections: list[ConnectionResult] = []
+        self.metrics_store = PerformanceMetricsStore()
         self.status = {
             'scanning': False,
             'monitoring': False,
@@ -1049,6 +1260,7 @@ class WifiManager:
             'active_modules': 0,
             'current_bridge': None,
             'reconnect_events': 0,
+            'metrics_available': self.metrics_store.is_available(),
         }
         self.active_bridge = None
 
@@ -1153,6 +1365,19 @@ class WifiManager:
                 return card
         return None
 
+    def get_sorted_connections(self) -> list[ConnectionResult]:
+        """
+        Get connections sorted by their calculated score (best first).
+
+        Returns:
+            List of ConnectionResult objects sorted by score descending
+        """
+        return sorted(
+            self.suitable_connections,
+            key=lambda conn: conn.calculate_score(),
+            reverse=True
+        )
+
     def scan_and_connect(self):
         """
         Main loop that scans for networks and attempts connections via modules.
@@ -1212,9 +1437,12 @@ class WifiManager:
                                 if result.connected:
                                     logger.info(
                                         f'Successfully connected to {network.ssid} '
-                                        f'via {module.__class__.__name__}'
+                                        f'via {module.__class__.__name__} (score: {result.calculate_score()})'
                                     )
                                     self.suitable_connections.append(result)
+
+                                    # Store metrics to MongoDB
+                                    self.metrics_store.store_metrics(result)
 
                                     # Add the connected card to monitoring for auto-reconnect
                                     card = self._get_card_for_interface(result.interface)
@@ -1276,6 +1504,55 @@ def use_connection(index):
 def stop_connection():
     wifi_manager.stop_current_connection()
     return jsonify({'success': True})
+
+
+@app.route('/api/connections/sorted')
+def get_sorted_connections():
+    """Get connections sorted by score (best first)."""
+    sorted_conns = wifi_manager.get_sorted_connections()
+    return jsonify([
+        {
+            'ssid': conn.network.ssid,
+            'bssid': conn.network.bssid,
+            'score': conn.calculate_score(),
+            'download_speed': conn.download_speed,
+            'upload_speed': conn.upload_speed,
+            'ping': conn.ping,
+            'signal_strength': conn.network.signal_strength,
+            'interface': conn.interface,
+            'connection_method': conn.connection_method
+        }
+        for conn in sorted_conns
+    ])
+
+
+@app.route('/api/metrics/network/<ssid>')
+def get_network_metrics(ssid):
+    """Get historical metrics for a specific network."""
+    history = wifi_manager.metrics_store.get_network_history(ssid)
+    avg_score = wifi_manager.metrics_store.get_average_score(ssid)
+    return jsonify({
+        'ssid': ssid,
+        'average_score': avg_score,
+        'history': [
+            {
+                'score': h.get('score'),
+                'download_speed': h.get('download_speed'),
+                'upload_speed': h.get('upload_speed'),
+                'ping': h.get('ping'),
+                'signal_strength': h.get('signal_strength'),
+                'timestamp': h.get('timestamp'),
+            }
+            for h in history
+        ]
+    })
+
+
+@app.route('/api/metrics/best')
+def get_best_networks():
+    """Get the best performing networks based on historical data."""
+    best = wifi_manager.metrics_store.get_best_networks()
+    return jsonify(best)
 
 
 def main():
