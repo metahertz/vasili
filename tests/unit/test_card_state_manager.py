@@ -4,7 +4,6 @@ Unit tests for CardStateManager.
 
 import time
 import unittest
-from unittest.mock import MagicMock, patch
 
 from card_state_manager import (
     CardInfo,

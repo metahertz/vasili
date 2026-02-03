@@ -90,6 +90,7 @@ class TestNetworkScannerScanWorker:
         """Test scan worker performs scan and updates results"""
         mock_card_manager = Mock(spec=WifiCardManager)
         mock_card = Mock(spec=WifiCard)
+        mock_card.interface = 'wlan0'  # Required for multi-card orchestration
 
         # Create test networks
         network1 = WifiNetwork(

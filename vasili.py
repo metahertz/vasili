@@ -890,9 +890,7 @@ class WifiCardManager:
                 'card_interfaces': [c.interface for c in self.cards],
                 'initialization_errors': self.initialization_errors,
                 'scanning_card': self._scanning_card.interface if self._scanning_card else None,
-                'connection_cards': [
-                    c.interface for c in self.cards if c != self._scanning_card
-                ],
+                'connection_cards': [c.interface for c in self.cards if c != self._scanning_card],
             }
 
             # Add card state manager status if available

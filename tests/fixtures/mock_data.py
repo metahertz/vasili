@@ -85,5 +85,7 @@ INTERFACE_UP = 'up\n'
 INTERFACE_DOWN = 'down\n'
 
 # Sample netifaces output
-SAMPLE_INTERFACES = ['lo', 'eth0', 'wlan0', 'wlan1']
-WIRELESS_INTERFACES = ['wlan0', 'wlan1']
+# Note: wlan0 is reserved for scanning by multi-card orchestration,
+# so we need at least 3 wlan interfaces for tests that need 2 connection cards
+SAMPLE_INTERFACES = ['lo', 'eth0', 'wlan0', 'wlan1', 'wlan2']
+WIRELESS_INTERFACES = ['wlan0', 'wlan1', 'wlan2']
