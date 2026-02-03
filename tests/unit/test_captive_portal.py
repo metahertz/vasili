@@ -208,7 +208,7 @@ class TestPortalDatabase:
 
     def test_init_success(self):
         """Test successful database initialization."""
-        with patch('pymongo.MongoClient') as mock_client:
+        with patch('modules.captivePortal.MongoClient') as mock_client:
             mock_instance = MagicMock()
             mock_instance.admin.command.return_value = None
             mock_client.return_value = mock_instance
@@ -219,7 +219,7 @@ class TestPortalDatabase:
 
     def test_init_connection_failure(self):
         """Test database initialization with connection failure."""
-        with patch('pymongo.MongoClient') as mock_client:
+        with patch('modules.captivePortal.MongoClient') as mock_client:
             from pymongo.errors import ConnectionFailure
 
             mock_client.return_value.admin.command.side_effect = ConnectionFailure('Connection failed')
@@ -229,7 +229,7 @@ class TestPortalDatabase:
 
     def test_store_portal_pattern(self):
         """Test storing portal pattern."""
-        with patch('pymongo.MongoClient') as mock_client:
+        with patch('modules.captivePortal.MongoClient') as mock_client:
             mock_instance = MagicMock()
             mock_collection = MagicMock()
             mock_instance.admin.command.return_value = None
@@ -248,7 +248,7 @@ class TestPortalDatabase:
 
     def test_get_portal_pattern(self):
         """Test retrieving portal pattern."""
-        with patch('pymongo.MongoClient') as mock_client:
+        with patch('modules.captivePortal.MongoClient') as mock_client:
             mock_instance = MagicMock()
             mock_collection = MagicMock()
             mock_instance.admin.command.return_value = None
@@ -271,7 +271,7 @@ class TestPortalDatabase:
 
     def test_get_portal_pattern_not_found(self):
         """Test retrieving non-existent portal pattern."""
-        with patch('pymongo.MongoClient') as mock_client:
+        with patch('modules.captivePortal.MongoClient') as mock_client:
             mock_instance = MagicMock()
             mock_collection = MagicMock()
             mock_instance.admin.command.return_value = None
@@ -287,7 +287,7 @@ class TestPortalDatabase:
 
     def test_record_auth_result_success(self):
         """Test recording successful authentication."""
-        with patch('pymongo.MongoClient') as mock_client:
+        with patch('modules.captivePortal.MongoClient') as mock_client:
             mock_instance = MagicMock()
             mock_collection = MagicMock()
             mock_instance.admin.command.return_value = None

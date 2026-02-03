@@ -155,7 +155,7 @@ class CaptivePortalDetector:
                         return self._analyze_portal('', response)
                 elif test_url.endswith('hotspot-detect.html'):
                     if '<HTML><HEAD><TITLE>Success</TITLE></HEAD><BODY>Success</BODY></HTML>' not in response.text:
-                        logger.info(f'Unexpected content from Apple hotspot test')
+                        logger.info('Unexpected content from Apple hotspot test')
                         # Might be a captive portal with modified content
                         return self._analyze_portal('', response)
 
