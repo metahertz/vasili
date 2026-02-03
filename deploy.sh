@@ -181,10 +181,10 @@ ssh -p "$REMOTE_PORT" "$REMOTE_USER@$REMOTE_HOST" bash <<ENDSSH
     echo "[INFO] Installing MongoDB..."
 
     # Import MongoDB public GPG key
-    curl -fsSL https://www.mongodb.org/static/pgp/server-7.0.asc | \$SUDO gpg --dearmor -o /usr/share/keyrings/mongodb-server-7.0.gpg 2>/dev/null || true
+    curl -fsSL https://www.mongodb.org/static/pgp/server-4.4.asc | \$SUDO gpg --dearmor -o /usr/share/keyrings/mongodb-server-4.4.gpg 2>/dev/null || true
 
-    # Add MongoDB repository
-    echo "deb [ signed-by=/usr/share/keyrings/mongodb-server-7.0.gpg ] https://repo.mongodb.org/apt/ubuntu jammy/mongodb-org/7.0 multiverse" | \$SUDO tee /etc/apt/sources.list.d/mongodb-org-7.0.list > /dev/null
+    # Add MongoDB repository (using focal as 4.4 doesn't have jammy packages)
+    echo "deb [ signed-by=/usr/share/keyrings/mongodb-server-4.4.gpg ] https://repo.mongodb.org/apt/ubuntu focal/mongodb-org/4.4 multiverse" | \$SUDO tee /etc/apt/sources.list.d/mongodb-org-4.4.list > /dev/null
 
     # Update and install MongoDB
     \$SUDO apt-get update -qq
