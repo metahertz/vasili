@@ -9,5 +9,4 @@ dataclasses
 typing
 pyyaml
 pyarchops-dnsmasq
-pymongo
 requests
