@@ -154,6 +154,63 @@ After re-deployment, restart the service:
 ssh root@192.168.1.1 'systemctl restart vasili'
 ```
 
+## MongoDB
+
+The deployment script automatically installs and configures MongoDB 7.0 for data persistence.
+
+### Configuration
+
+MongoDB is configured to:
+- Listen on `localhost:27017` (default port)
+- Bind only to `127.0.0.1` (not accessible externally)
+- Store data in `/var/lib/mongodb`
+- Log to `/var/log/mongodb/mongod.log`
+
+### Managing MongoDB
+
+Check MongoDB status:
+```bash
+ssh root@192.168.1.1 'systemctl status mongod'
+```
+
+View MongoDB logs:
+```bash
+ssh root@192.168.1.1 'tail -f /var/log/mongodb/mongod.log'
+```
+
+Restart MongoDB:
+```bash
+ssh root@192.168.1.1 'systemctl restart mongod'
+```
+
+### Connecting from Python
+
+MongoDB is accessible from Python using pymongo:
+```python
+from pymongo import MongoClient
+client = MongoClient('localhost', 27017)
+db = client['vasili']
+```
+
+### Troubleshooting MongoDB
+
+If MongoDB fails to start:
+```bash
+# Check detailed status
+ssh root@192.168.1.1 'systemctl status mongod -l'
+
+# Check logs
+ssh root@192.168.1.1 'journalctl -u mongod -n 50'
+
+# Verify MongoDB is listening
+ssh root@192.168.1.1 'ss -tlnp | grep 27017'
+```
+
+Common issues:
+- Insufficient disk space - MongoDB requires space in `/var/lib/mongodb`
+- Port conflict - ensure nothing else is using port 27017
+- Permission errors - MongoDB runs as the `mongodb` user
+
 ## Security Considerations
 
 - The deployment script requires SSH key authentication (more secure than passwords)

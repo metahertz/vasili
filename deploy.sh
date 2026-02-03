@@ -171,9 +171,52 @@ ssh -p "$REMOTE_PORT" "$REMOTE_USER@$REMOTE_HOST" bash <<ENDSSH
         dnsmasq \\
         iw \\
         build-essential \\
-        libnetfilter-queue-dev
+        libnetfilter-queue-dev \\
+        gnupg \\
+        curl
 
     echo "[INFO] System packages installed successfully"
+
+    # Install MongoDB
+    echo "[INFO] Installing MongoDB..."
+
+    # Import MongoDB public GPG key
+    curl -fsSL https://www.mongodb.org/static/pgp/server-7.0.asc | \$SUDO gpg --dearmor -o /usr/share/keyrings/mongodb-server-7.0.gpg 2>/dev/null || true
+
+    # Add MongoDB repository
+    echo "deb [ signed-by=/usr/share/keyrings/mongodb-server-7.0.gpg ] https://repo.mongodb.org/apt/ubuntu jammy/mongodb-org/7.0 multiverse" | \$SUDO tee /etc/apt/sources.list.d/mongodb-org-7.0.list > /dev/null
+
+    # Update and install MongoDB
+    \$SUDO apt-get update -qq
+    \$SUDO apt-get install -y -qq mongodb-org
+
+    # Configure MongoDB to listen on localhost:27017
+    \$SUDO tee /etc/mongod.conf > /dev/null <<'MONGOCONF'
+# MongoDB configuration file
+storage:
+  dbPath: /var/lib/mongodb
+  journal:
+    enabled: true
+
+systemLog:
+  destination: file
+  logAppend: true
+  path: /var/log/mongodb/mongod.log
+
+net:
+  port: 27017
+  bindIp: 127.0.0.1
+
+processManagement:
+  timeZoneInfo: /usr/share/zoneinfo
+MONGOCONF
+
+    # Start and enable MongoDB service
+    \$SUDO systemctl daemon-reload
+    \$SUDO systemctl start mongod
+    \$SUDO systemctl enable mongod
+
+    echo "[INFO] MongoDB installed and configured on localhost:27017"
 ENDSSH
 
 # Install Python dependencies using pipx
