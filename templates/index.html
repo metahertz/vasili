@@ -250,6 +250,87 @@
         .header-row h2 {
             margin-bottom: 0;
         }
+
+        .history-panel {
+            background: #16213e;
+            border-radius: 12px;
+            padding: 20px;
+            margin-top: 20px;
+        }
+
+        .history-panel h2 {
+            margin-bottom: 15px;
+            color: #00d4ff;
+            font-size: 1.2em;
+        }
+
+        .history-list {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+
+        .history-item {
+            background: #0f3460;
+            border-radius: 8px;
+            padding: 12px 15px;
+        }
+
+        .history-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 8px;
+        }
+
+        .history-ssid {
+            font-weight: bold;
+            font-size: 1em;
+        }
+
+        .history-status {
+            font-size: 0.85em;
+            padding: 3px 8px;
+            border-radius: 4px;
+            font-weight: bold;
+        }
+
+        .history-status.success {
+            background: #00ff8822;
+            color: #00ff88;
+        }
+
+        .history-status.failed {
+            background: #ff6b6b22;
+            color: #ff6b6b;
+        }
+
+        .history-details {
+            display: flex;
+            gap: 15px;
+            font-size: 0.8em;
+            color: #aaa;
+            flex-wrap: wrap;
+        }
+
+        .history-speed {
+            margin-top: 5px;
+            font-size: 0.85em;
+        }
+
+        .history-speed .download {
+            color: #00ff88;
+        }
+
+        .history-speed .upload {
+            color: #00d4ff;
+        }
+
+        .history-speed .ping {
+            color: #ffcc00;
+        }
     </style>
 </head>
 <body>
@@ -345,18 +426,155 @@
                 {% endif %}
             </div>
         </div>
+
+        <div class="history-panel">
+            <h2>Connection History</h2>
+            <div class="history-list" id="history-list">
+                <div class="empty-state">
+                    <p>Loading history...</p>
+                </div>
+            </div>
+        </div>
     </div>
 
+    <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
     <script>
+        const socket = io();
+
+        socket.on('connect', function() {
+            console.log('Connected to WebSocket');
+        });
+
+        socket.on('status_update', function(status) {
+            console.log('Status update:', status);
+            updateStatus(status);
+        });
+
+        socket.on('connections_update', function(data) {
+            console.log('Connections update:', data);
+            updateConnections(data.connections);
+        });
+
+        function updateStatus(status) {
+            // Update scanning status
+            const scanningValue = document.querySelector('.status-item:nth-child(1) .value');
+            if (scanningValue) {
+                scanningValue.textContent = status.scanning ? 'Active' : 'Idle';
+                scanningValue.className = 'value ' + (status.scanning ? 'active' : 'inactive');
+            }
+
+            // Update cards in use
+            const cardsValue = document.querySelector('.status-item:nth-child(2) .value');
+            if (cardsValue) {
+                cardsValue.textContent = status.cards_in_use;
+            }
+
+            // Update active modules
+            const modulesValue = document.querySelector('.status-item:nth-child(3) .value');
+            if (modulesValue) {
+                modulesValue.textContent = status.active_modules;
+            }
+
+            // Update bridge info
+            const bridgeInfo = document.querySelector('.bridge-info');
+            const statusPanel = document.querySelector('.status-panel');
+
+            if (status.current_bridge) {
+                if (!bridgeInfo) {
+                    const bridgeHtml = `
+                        <div class="bridge-info">
+                            <h3>Active Bridge</h3>
+                            <p><strong>SSID:</strong> <span class="bridge-ssid">${status.current_bridge.ssid}</span></p>
+                            <p><strong>WiFi Interface:</strong> <span class="bridge-wifi">${status.current_bridge.wifi_interface}</span></p>
+                            <p><strong>Ethernet Interface:</strong> <span class="bridge-eth">${status.current_bridge.ethernet_interface}</span></p>
+                            <button class="btn btn-disconnect" onclick="stopConnection()">Disconnect</button>
+                        </div>
+                    `;
+                    statusPanel.insertAdjacentHTML('beforeend', bridgeHtml);
+                } else {
+                    document.querySelector('.bridge-ssid').textContent = status.current_bridge.ssid;
+                    document.querySelector('.bridge-wifi').textContent = status.current_bridge.wifi_interface;
+                    document.querySelector('.bridge-eth').textContent = status.current_bridge.ethernet_interface;
+                }
+            } else {
+                if (bridgeInfo) {
+                    bridgeInfo.remove();
+                }
+            }
+        }
+
+        function updateConnections(connections) {
+            const connectionList = document.getElementById('connection-list');
+
+            if (!connections || connections.length === 0) {
+                connectionList.innerHTML = `
+                    <div class="empty-state">
+                        <p>No connections available yet.</p>
+                        <p>The system is scanning for networks...</p>
+                    </div>
+                `;
+                return;
+            }
+
+            let html = '';
+            connections.forEach((conn, index) => {
+                const signalBars = [0, 25, 50, 75].map(threshold =>
+                    `<span class="bar ${conn.network.signal_strength > threshold ? 'active' : ''}"></span>`
+                ).join('');
+
+                let speedStats = '';
+                if (conn.connected) {
+                    speedStats = `
+                        <div class="speed-stats">
+                            <span class="speed-stat">
+                                <span class="download">${conn.download_speed.toFixed(1)} Mbps</span>
+                            </span>
+                            <span class="speed-stat">
+                                <span class="upload">${conn.upload_speed.toFixed(1)} Mbps</span>
+                            </span>
+                            <span class="speed-stat">
+                                <span class="ping">${conn.ping.toFixed(0)} ms</span>
+                            </span>
+                        </div>
+                    `;
+                }
+
+                html += `
+                    <div class="connection-card">
+                        <div class="connection-info">
+                            <div class="connection-ssid">
+                                ${conn.network.ssid || '(Hidden Network)'}
+                                ${conn.connected ? '<span style="color: #00ff88; font-size: 0.8em;">Connected</span>' : ''}
+                            </div>
+                            <div class="connection-details">
+                                <span>
+                                    Signal:
+                                    <span class="signal-bar">${signalBars}</span>
+                                    ${conn.network.signal_strength}%
+                                </span>
+                                <span>${conn.network.encryption_type || 'Open'}</span>
+                                <span>Ch ${conn.network.channel}</span>
+                                <span>${conn.connection_method}</span>
+                            </div>
+                            ${speedStats}
+                        </div>
+                        <button class="btn btn-connect" onclick="useConnection(${index})">
+                            Use
+                        </button>
+                    </div>
+                `;
+            });
+
+            connectionList.innerHTML = html;
+        }
+
         function useConnection(index) {
             fetch('/api/use_connection/' + index, {
                 method: 'POST'
             })
             .then(response => response.json())
             .then(data => {
-                if (data.success) {
-                    location.reload();
-                } else {
+                if (!data.success) {
                     alert('Failed to connect. Please try again.');
                 }
             })
@@ -370,11 +588,6 @@
                 method: 'POST'
             })
             .then(response => response.json())
-            .then(data => {
-                if (data.success) {
-                    location.reload();
-                }
-            })
             .catch(err => {
                 alert('Error: ' + err.message);
             });
@@ -384,10 +597,72 @@
             location.reload();
         }
 
-        // Auto-refresh every 30 seconds
-        setTimeout(function() {
-            location.reload();
-        }, 30000);
+        // Load history on page load
+        function loadHistory() {
+            fetch('/api/history')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.available && data.history) {
+                        updateHistory(data.history);
+                    }
+                })
+                .catch(err => {
+                    console.error('Error loading history:', err);
+                });
+        }
+
+        function updateHistory(history) {
+            const historyList = document.getElementById('history-list');
+            if (!historyList) return;
+
+            if (!history || history.length === 0) {
+                historyList.innerHTML = `
+                    <div class="empty-state">
+                        <p>No connection history yet.</p>
+                    </div>
+                `;
+                return;
+            }
+
+            let html = '';
+            history.forEach(entry => {
+                const timestamp = new Date(entry.timestamp).toLocaleString();
+                const statusClass = entry.success ? 'success' : 'failed';
+                const statusText = entry.success ? 'Success' : 'Failed';
+
+                let speedInfo = '';
+                if (entry.success && entry.download_speed) {
+                    speedInfo = `
+                        <div class="history-speed">
+                            <span class="download">${entry.download_speed.toFixed(1)} Mbps</span> /
+                            <span class="upload">${entry.upload_speed.toFixed(1)} Mbps</span> /
+                            <span class="ping">${entry.ping.toFixed(0)} ms</span>
+                        </div>
+                    `;
+                }
+
+                html += `
+                    <div class="history-item">
+                        <div class="history-header">
+                            <span class="history-ssid">${entry.ssid || '(Hidden)'}</span>
+                            <span class="history-status ${statusClass}">${statusText}</span>
+                        </div>
+                        <div class="history-details">
+                            <span>${timestamp}</span>
+                            <span>Signal: ${entry.signal_strength}%</span>
+                            ${entry.encryption_type ? `<span>${entry.encryption_type}</span>` : ''}
+                            ${entry.interface ? `<span>${entry.interface}</span>` : ''}
+                        </div>
+                        ${speedInfo}
+                    </div>
+                `;
+            });
+
+            historyList.innerHTML = html;
+        }
+
+        // Load history when page loads
+        window.addEventListener('load', loadHistory);
     </script>
 </body>
 </html>
