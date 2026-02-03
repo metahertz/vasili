@@ -14,8 +14,8 @@ The project now has:
 - ✅ **Production-ready features** - Error handling, logging, config files, auto-reconnect
 - ✅ **Deployment tooling** - SSH deployment script for Ubuntu-based routers
 
-**Completed:** All P0, P0.5, and P1 items (18 total features)
-**Next:** P2 feature work (captive portal, WPA3, connection scoring, auto-selection, systemd service)
+**Completed:** All P0, P0.5, P1 items plus 4 P2 features (22 total features)
+**Next:** Remaining P2 work (WPA3, auto-selection, systemd service)
 
 ---
 
@@ -57,13 +57,13 @@ Once P0 is complete, focus on making it reliable.
 
 Features that make the tool genuinely useful.
 
-- [ ] **Captive portal module** - Detect and attempt to authenticate through common captive portals
+- [x] **Captive portal module** - Detect and attempt to authenticate through common captive portals (PR #19)
 - [ ] **WPA3 support** - Modern encryption standard
-- [ ] **Connection scoring algorithm** - Rank connections by speed, stability, signal strength
+- [x] **Connection scoring algorithm** - Rank connections by speed, stability, signal strength (PR #21)
 - [ ] **Auto-selection mode** - Automatically use the best available connection
-- [ ] **Web UI improvements** - Real-time status updates, connection history, manual override
+- [x] **Web UI improvements** - Real-time status updates, connection history, manual override (PR #18)
 - [ ] **Systemd service** - Run as a daemon on boot
-- [ ] **Multi-card orchestration** - Dedicated scanning card vs connection cards as described in README
+- [x] **Multi-card orchestration** - Dedicated scanning card vs connection cards as described in README (WifiCardManager with scanning_card/connection_cards role separation)
 
 ---
 
