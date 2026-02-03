@@ -1617,7 +1617,7 @@ def store_connection_history(
 def emit_status_update():
     """Emit current status to all connected clients."""
     try:
-        socketio.emit('status_update', wifi_manager.status, broadcast=True)
+        socketio.emit('status_update', wifi_manager.status)
     except Exception as e:
         logger.error(f'Failed to emit status update: {e}')
 
@@ -1644,7 +1644,7 @@ def emit_connections_update():
                 'interface': conn.interface,
             }
             connections_data.append(conn_dict)
-        socketio.emit('connections_update', {'connections': connections_data}, broadcast=True)
+        socketio.emit('connections_update', {'connections': connections_data})
     except Exception as e:
         logger.error(f'Failed to emit connections update: {e}')
 
