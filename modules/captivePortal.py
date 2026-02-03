@@ -62,12 +62,14 @@ class PortalDatabase:
             return
 
         try:
-            pattern_data.update({
-                'ssid': ssid,
-                'last_seen': time.time(),
-                'success_count': 0,
-                'failure_count': 0,
-            })
+            pattern_data.update(
+                {
+                    'ssid': ssid,
+                    'last_seen': time.time(),
+                    'success_count': 0,
+                    'failure_count': 0,
+                }
+            )
 
             # Upsert pattern
             self.patterns_collection.update_one(
@@ -143,7 +145,9 @@ class CaptivePortalDetector:
                 # Check for redirects (302, 303, 307, 308)
                 if response.status_code in [301, 302, 303, 307, 308]:
                     redirect_url = response.headers.get('Location', '')
-                    logger.info(f'Captive portal detected: {response.status_code} -> {redirect_url}')
+                    logger.info(
+                        f'Captive portal detected: {response.status_code} -> {redirect_url}'
+                    )
 
                     portal_info = self._analyze_portal(redirect_url, response)
                     return portal_info
@@ -154,7 +158,10 @@ class CaptivePortalDetector:
                         logger.info(f'Unexpected response from {test_url}: {response.status_code}')
                         return self._analyze_portal('', response)
                 elif test_url.endswith('hotspot-detect.html'):
-                    if '<HTML><HEAD><TITLE>Success</TITLE></HEAD><BODY>Success</BODY></HTML>' not in response.text:
+                    if (
+                        '<HTML><HEAD><TITLE>Success</TITLE></HEAD><BODY>Success</BODY></HTML>'
+                        not in response.text
+                    ):
                         logger.info('Unexpected content from Apple hotspot test')
                         # Might be a captive portal with modified content
                         return self._analyze_portal('', response)
@@ -274,12 +281,14 @@ class CaptivePortalAuthenticator:
 
             # Look for form submission or acceptance button
             # This is a simplified version - real implementation would need more sophisticated parsing
-            form_match = re.search(r'<form[^>]+action=["\']([^"\']+)["\']', response.text, re.IGNORECASE)
+            form_match = re.search(
+                r'<form[^>]+action=["\']([^"\']+)["\']', response.text, re.IGNORECASE
+            )
 
             if form_match:
                 action_url = form_match.group(1)
                 if not action_url.startswith('http'):
-                    base_url = f"{urlparse(redirect_url).scheme}://{urlparse(redirect_url).netloc}"
+                    base_url = f'{urlparse(redirect_url).scheme}://{urlparse(redirect_url).netloc}'
                     action_url = base_url + action_url
 
                 # Try POSTing acceptance

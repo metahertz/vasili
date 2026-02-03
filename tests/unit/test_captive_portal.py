@@ -222,7 +222,9 @@ class TestPortalDatabase:
         with patch('modules.captivePortal.MongoClient') as mock_client:
             from pymongo.errors import ConnectionFailure
 
-            mock_client.return_value.admin.command.side_effect = ConnectionFailure('Connection failed')
+            mock_client.return_value.admin.command.side_effect = ConnectionFailure(
+                'Connection failed'
+            )
 
             db = PortalDatabase()
             assert db.client is None
