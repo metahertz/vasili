@@ -1,4 +1,6 @@
 flask
+flask-socketio
+pymongo
 wifi
 speedtest-cli
 netifaces
