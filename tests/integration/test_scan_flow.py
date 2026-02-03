@@ -36,25 +36,26 @@ class TestScanFlow:
         """Test multiple cards scanning at the same time."""
         manager = WifiCardManager()
 
-        # Lease both cards
-        card1 = manager.lease_card()
-        card2 = manager.lease_card()
+        # Lease both scanning and connection cards
+        # With multi-card orchestration, one card is dedicated to scanning
+        scan_card = manager.lease_card(for_scanning=True)
+        conn_card = manager.lease_card(for_scanning=False)
 
-        assert card1 is not None
-        assert card2 is not None
-        assert card1 != card2
+        assert scan_card is not None
+        assert conn_card is not None
+        assert scan_card != conn_card
 
-        # Both scan simultaneously
-        networks1 = card1.scan()
-        networks2 = card2.scan()
+        # Both can scan simultaneously
+        networks1 = scan_card.scan()
+        networks2 = conn_card.scan()
 
         # Both should get results
         assert len(networks1) == 3
         assert len(networks2) == 3
 
         # Return cards
-        manager.return_card(card1)
-        manager.return_card(card2)
+        manager.return_card(scan_card)
+        manager.return_card(conn_card)
 
     def test_scan_with_card_lifecycle(self, all_mocks):
         """Test complete card lifecycle: discover → lease → scan → return."""

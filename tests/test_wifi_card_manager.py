@@ -17,7 +17,9 @@ class TestWifiCardManagerInit:
 
         # Mock WifiCard instances
         mock_card1 = Mock(spec=WifiCard)
+        mock_card1.interface = 'wlan0'
         mock_card2 = Mock(spec=WifiCard)
+        mock_card2.interface = 'wlan1'
         mock_wifi_card_class.side_effect = [mock_card1, mock_card2]
 
         manager = WifiCardManager()
@@ -45,6 +47,7 @@ class TestWifiCardManagerInit:
         mock_interfaces.return_value = ['lo', 'wifi0']
 
         mock_card = Mock(spec=WifiCard)
+        mock_card.interface = 'wifi0'
         mock_wifi_card_class.return_value = mock_card
 
         manager = WifiCardManager()
@@ -60,7 +63,9 @@ class TestWifiCardManagerInit:
 
         # First card succeeds, second fails, third succeeds
         mock_card1 = Mock(spec=WifiCard)
+        mock_card1.interface = 'wlan0'
         mock_card2 = Mock(spec=WifiCard)
+        mock_card2.interface = 'wlan2'
         mock_wifi_card_class.side_effect = [
             mock_card1,
             ValueError('Not a valid wireless device'),
@@ -82,6 +87,7 @@ class TestWifiCardManagerScanForCards:
         """Test that scan_for_cards clears existing cards"""
         mock_interfaces.return_value = ['wlan0']
         mock_card = Mock(spec=WifiCard)
+        mock_card.interface = 'wlan0'
         mock_wifi_card_class.return_value = mock_card
 
         manager = WifiCardManager()
@@ -89,6 +95,7 @@ class TestWifiCardManagerScanForCards:
 
         # Change the interfaces returned
         mock_interfaces.return_value = ['wlan1', 'wlan2']
+        mock_card.interface = 'wlan1'  # Update for new scan
         manager.scan_for_cards()
 
         # Should have 2 new cards, not 3
@@ -105,8 +112,10 @@ class TestWifiCardManagerLeaseCard:
         mock_interfaces.return_value = ['wlan0', 'wlan1']
 
         mock_card1 = Mock(spec=WifiCard)
+        mock_card1.interface = 'wlan0'
         mock_card1.in_use = False
         mock_card2 = Mock(spec=WifiCard)
+        mock_card2.interface = 'wlan1'
         mock_card2.in_use = False
         mock_wifi_card_class.side_effect = [mock_card1, mock_card2]
 
@@ -114,7 +123,9 @@ class TestWifiCardManagerLeaseCard:
 
         leased_card = manager.lease_card()
 
-        assert leased_card == mock_card1
+        # With multi-card orchestration, lease_card() defaults to connection cards
+        # mock_card1 is the scanning card (first card), so mock_card2 is returned
+        assert leased_card == mock_card2
         assert leased_card.in_use is True
 
     @patch('vasili.netifaces.interfaces')
@@ -124,6 +135,7 @@ class TestWifiCardManagerLeaseCard:
         mock_interfaces.return_value = ['wlan0']
 
         mock_card = Mock(spec=WifiCard)
+        mock_card.interface = 'wlan0'
         mock_card.in_use = True
         mock_wifi_card_class.return_value = mock_card
 
@@ -152,10 +164,13 @@ class TestWifiCardManagerLeaseCard:
         mock_interfaces.return_value = ['wlan0', 'wlan1', 'wlan2']
 
         mock_card1 = Mock(spec=WifiCard)
+        mock_card1.interface = 'wlan0'
         mock_card1.in_use = True
         mock_card2 = Mock(spec=WifiCard)
+        mock_card2.interface = 'wlan1'
         mock_card2.in_use = True
         mock_card3 = Mock(spec=WifiCard)
+        mock_card3.interface = 'wlan2'
         mock_card3.in_use = False
         mock_wifi_card_class.side_effect = [mock_card1, mock_card2, mock_card3]
 
@@ -177,6 +192,7 @@ class TestWifiCardManagerReturnCard:
         mock_interfaces.return_value = ['wlan0']
 
         mock_card = Mock(spec=WifiCard)
+        mock_card.interface = 'wlan0'
         mock_card.in_use = True
         mock_wifi_card_class.return_value = mock_card
 
@@ -192,12 +208,14 @@ class TestWifiCardManagerReturnCard:
         mock_interfaces.return_value = ['wlan0']
 
         mock_card = Mock(spec=WifiCard)
+        mock_card.interface = 'wlan0'
         mock_wifi_card_class.return_value = mock_card
 
         manager = WifiCardManager()
 
         # Create a different card not in the manager
         other_card = Mock(spec=WifiCard)
+        other_card.interface = 'wlan1'
         other_card.in_use = True
 
         # Should not crash, just do nothing
@@ -216,7 +234,9 @@ class TestWifiCardManagerGetAllCards:
         mock_interfaces.return_value = ['wlan0', 'wlan1']
 
         mock_card1 = Mock(spec=WifiCard)
+        mock_card1.interface = 'wlan0'
         mock_card2 = Mock(spec=WifiCard)
+        mock_card2.interface = 'wlan1'
         mock_wifi_card_class.side_effect = [mock_card1, mock_card2]
 
         manager = WifiCardManager()

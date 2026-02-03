@@ -913,6 +913,7 @@ class WifiCardManager:
         self.cards: list[WifiCard] = []
         self._lock = threading.Lock()
         self.initialization_errors: list[str] = []
+        self._scanning_card: Optional[WifiCard] = None
         self.scan_for_cards()
 
     def scan_for_cards(self) -> int:
@@ -980,17 +981,58 @@ class WifiCardManager:
                     'No WiFi cards detected. System will operate in degraded mode. '
                     'Scanning and connection features will be unavailable.'
                 )
+                return 0
+
+            # Designate scanning card based on config or first available
+            scan_interface = config.interfaces.scan_interface
+            if scan_interface:
+                # Use configured scan interface if available
+                for card in self.cards:
+                    if card.interface == scan_interface:
+                        self._scanning_card = card
+                        logger.info(f'Designated {card.interface} as scanning card (from config)')
+                        break
+                if not self._scanning_card:
+                    logger.warning(
+                        f'Configured scan_interface {scan_interface} not found, '
+                        'using first card as scanning card'
+                    )
+
+            # If no configured scan interface or it wasn't found, use first card
+            if not self._scanning_card and self.cards:
+                self._scanning_card = self.cards[0]
+                logger.info(f'Designated {self._scanning_card.interface} as scanning card (auto)')
 
             return len(self.cards)
 
-    def lease_card(self) -> Optional[WifiCard]:
-        """Get an available wifi card and mark it as in use."""
+    def lease_card(self, for_scanning: bool = False) -> Optional[WifiCard]:
+        """
+        Get an available wifi card and mark it as in use.
+
+        Args:
+            for_scanning: If True, returns the dedicated scanning card.
+                         If False, returns an available connection card only.
+
+        Returns:
+            Available WifiCard or None if no cards available
+        """
         with self._lock:
-            for card in self.cards:
-                if not card.in_use:
-                    card.in_use = True
-                    return card
-            return None
+            if for_scanning:
+                # Return the dedicated scanning card if available
+                if self._scanning_card and not self._scanning_card.in_use:
+                    self._scanning_card.in_use = True
+                    return self._scanning_card
+                return None
+            else:
+                # Return an available connection card (not the scanning card)
+                for card in self.cards:
+                    if card == self._scanning_card:
+                        # Skip the scanning card - it's reserved for scanning only
+                        continue
+                    if not card.in_use:
+                        card.in_use = True
+                        return card
+                return None
 
     def get_card(self) -> Optional[WifiCard]:
         """Alias for lease_card() for backwards compatibility with modules."""
@@ -1017,6 +1059,26 @@ class WifiCardManager:
         with self._lock:
             return len(self.cards) > 0
 
+    def get_scanning_card(self) -> Optional[WifiCard]:
+        """
+        Get the dedicated scanning card.
+
+        Returns:
+            The WifiCard designated for scanning, or None if not assigned
+        """
+        with self._lock:
+            return self._scanning_card
+
+    def get_connection_cards(self) -> list[WifiCard]:
+        """
+        Get all cards available for connections (excludes scanning card).
+
+        Returns:
+            List of WifiCards available for connections
+        """
+        with self._lock:
+            return [card for card in self.cards if card != self._scanning_card]
+
     def get_status(self) -> dict:
         """Get status information about WiFi cards."""
         with self._lock:
@@ -1026,6 +1088,8 @@ class WifiCardManager:
                 'in_use_cards': sum(1 for c in self.cards if c.in_use),
                 'card_interfaces': [c.interface for c in self.cards],
                 'initialization_errors': self.initialization_errors,
+                'scanning_card': self._scanning_card.interface if self._scanning_card else None,
+                'connection_cards': [c.interface for c in self.cards if c != self._scanning_card],
             }
 
 
@@ -1055,24 +1119,33 @@ class NetworkScanner:
             self.scan_thread = None
 
     def _scan_worker(self):
-        """Background worker that continuously scans for networks"""
+        """
+        Background worker that continuously scans for networks.
+
+        Uses the dedicated scanning card to prevent interference with
+        connection operations on other cards.
+        """
         config = get_config()
         scan_interval = config.scanner.scan_interval
 
         while self.scanning:
             card = None
             try:
-                # Get an available wifi card
-                card = self.card_manager.lease_card()
+                # Get the dedicated scanning card
+                card = self.card_manager.lease_card(for_scanning=True)
                 if not card:
-                    logger.error('No wifi cards available for scanning')
+                    logger.warning('Scanning card not available, waiting...')
                     time.sleep(1)
                     continue
+
+                logger.debug(f'Starting scan on dedicated card: {card.interface}')
 
                 # Scan for networks
                 networks = card.scan()
                 self.scan_results = networks
                 self.scan_queue.put(networks)
+
+                logger.debug(f'Scan completed, found {len(networks)} networks')
 
                 # Wait before scanning again
                 time.sleep(scan_interval)
