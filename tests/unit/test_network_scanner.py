@@ -133,33 +133,33 @@ class TestNetworkScanner:
 
         scanner.stop_scan()
 
-    def test_scan_worker_all_cards_busy(self, mock_subprocess, mock_netifaces, mock_time_sleep):
-        """Test scan worker when all cards are in use."""
+    def test_scan_worker_scanning_card_busy(self, mock_subprocess, mock_netifaces, mock_time_sleep):
+        """Test scan worker when scanning card is in use."""
         manager = WifiCardManager()
         scanner = NetworkScanner(manager)
 
-        # Lease all cards
-        card1 = manager.lease_card()
-        card2 = manager.lease_card()
+        # Lease the dedicated scanning card
+        scanning_card = manager.lease_card(for_scanning=True)
+        assert scanning_card is not None
 
         scanner.start_scan()
         time.sleep(0.1)
 
-        # Scanner should wait for cards
+        # Scanner should wait for scanning card
         # Results should be empty or stale
         scanner.stop_scan()
 
-        # Return cards
-        manager.return_card(card1)
-        manager.return_card(card2)
+        # Return the scanning card
+        manager.return_card(scanning_card)
 
     def test_scan_worker_handles_exceptions(self, mock_subprocess, mock_netifaces):
         """Test that scan worker handles exceptions and continues."""
         manager = WifiCardManager()
         scanner = NetworkScanner(manager)
 
-        # Patch scan to raise an exception
-        with patch.object(manager.cards[0], 'scan', side_effect=Exception('Scan error')):
+        # Patch the dedicated scanning card's scan method to raise an exception
+        scanning_card = manager.get_scanning_card()
+        with patch.object(scanning_card, 'scan', side_effect=Exception('Scan error')):
             scanner.start_scan()
             time.sleep(0.2)
 
@@ -168,20 +168,20 @@ class TestNetworkScanner:
 
             scanner.stop_scan()
 
-    def test_scan_worker_returns_card(self, mock_subprocess, mock_netifaces):
-        """Test that scan worker returns card after scanning."""
+    def test_scan_worker_returns_scanning_card(self, mock_subprocess, mock_netifaces):
+        """Test that scan worker returns scanning card after scanning."""
         manager = WifiCardManager()
         scanner = NetworkScanner(manager)
 
         scanner.start_scan()
         time.sleep(0.2)
 
-        # Check that cards are not permanently in use
-        available_cards = [card for card in manager.cards if not card.in_use]
-        # At least one card should be available (scanner returns them)
-        assert len(available_cards) >= 1
-
+        # Stop scanning to ensure card is returned
         scanner.stop_scan()
+
+        # Scanning card should be available
+        scanning_card = manager.get_scanning_card()
+        assert scanning_card.in_use is False
 
     def test_multiple_scan_cycles(self, mock_subprocess, mock_netifaces):
         """Test that scanner can be started and stopped multiple times."""
@@ -233,3 +233,53 @@ class TestNetworkScanner:
         assert len(networks) > 0
 
         scanner.stop_scan()
+
+    def test_uses_dedicated_scanning_card(self, mock_subprocess, mock_netifaces):
+        """Test that scanner uses the dedicated scanning card."""
+        manager = WifiCardManager()
+        scanner = NetworkScanner(manager)
+
+        # Get the designated scanning card
+        scanning_card = manager.get_scanning_card()
+        assert scanning_card is not None
+
+        scanner.start_scan()
+        time.sleep(0.2)
+
+        # Scanning card should be available after scan completes
+        # (it's returned to pool between scans)
+        scanner.stop_scan()
+
+        # Verify scanning card can be leased again
+        card = manager.lease_card(for_scanning=True)
+        assert card is not None
+        assert card == scanning_card
+
+    def test_scanner_does_not_use_connection_cards(self, mock_subprocess, mock_netifaces):
+        """Test that scanner uses dedicated card, not connection cards."""
+        manager = WifiCardManager()
+        scanner = NetworkScanner(manager)
+
+        # Lease all connection cards
+        conn_cards = []
+        while True:
+            card = manager.lease_card(for_scanning=False)
+            if card is None:
+                break
+            conn_cards.append(card)
+
+        # Should have leased the connection card(s)
+        assert len(conn_cards) > 0
+
+        # Scanner should still work - uses dedicated scanning card
+        scanner.start_scan()
+        time.sleep(0.2)
+
+        # Scanner should complete scans even with connection cards busy
+        assert len(scanner.scan_results) > 0
+
+        scanner.stop_scan()
+
+        # Return cards
+        for card in conn_cards:
+            manager.return_card(card)

@@ -182,9 +182,10 @@ class TestConnectFlow:
         """Test connecting to different networks with different cards."""
         manager = WifiCardManager()
 
-        # Lease two cards
-        card1 = manager.lease_card()
-        card2 = manager.lease_card()
+        # Lease scanning card and connection card for parallel operations
+        # In multi-card orchestration, scanning card is reserved but can still connect
+        card1 = manager.lease_card(for_scanning=True)
+        card2 = manager.lease_card(for_scanning=False)
 
         assert card1 is not None
         assert card2 is not None
