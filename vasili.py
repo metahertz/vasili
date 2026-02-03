@@ -1268,7 +1268,7 @@ class WifiManager:
 # Flask web interface
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'vasili-secret-key-change-in-production'
-socketio = SocketIO(app, cors_allowed_origins="*")
+socketio = SocketIO(app, cors_allowed_origins='*')
 wifi_manager = WifiManager()
 
 # MongoDB setup
@@ -1290,7 +1290,9 @@ except Exception as e:
     logger.warning(f'MongoDB connection error: {e} - history features will be disabled')
 
 
-def store_connection_history(network: WifiNetwork, success: bool, speed_test: dict = None, interface: str = None):
+def store_connection_history(
+    network: WifiNetwork, success: bool, speed_test: dict = None, interface: str = None
+):
     """Store connection attempt in MongoDB history."""
     if history_collection is None:
         return
