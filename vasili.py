@@ -21,6 +21,7 @@ from pyarchops_dnsmasq import dnsmasq
 
 from config import VasiliConfig, apply_logging_config, load_config
 from logging_config import setup_logging, get_logger
+from card_state_manager import CardStateManager, CardRole, CardState
 
 # Configure logging with structured output, configurable levels, and file support
 # Set VASILI_LOG_LEVEL, VASILI_LOG_FILE, VASILI_LOG_FORMAT environment variables to customize
@@ -704,6 +705,8 @@ class WifiCardManager:
         self.cards: list[WifiCard] = []
         self._lock = threading.Lock()
         self.initialization_errors: list[str] = []
+        self._card_state_manager: Optional[CardStateManager] = None
+        self._scanning_card: Optional[WifiCard] = None
         self.scan_for_cards()
 
     def scan_for_cards(self) -> int:
@@ -771,17 +774,59 @@ class WifiCardManager:
                     'No WiFi cards detected. System will operate in degraded mode. '
                     'Scanning and connection features will be unavailable.'
                 )
+                return 0
+
+            # Initialize card state manager and assign roles
+            self._card_state_manager = CardStateManager(config)
+            interface_list = [card.interface for card in self.cards]
+            roles = self._card_state_manager.assign_roles(interface_list)
+
+            # Identify the scanning card
+            scanning_interface = self._card_state_manager.get_scanning_interface()
+            for card in self.cards:
+                if card.interface == scanning_interface:
+                    self._scanning_card = card
+                    logger.info(f'Designated {card.interface} as dedicated scanning card')
+                    break
 
             return len(self.cards)
 
-    def lease_card(self) -> Optional[WifiCard]:
-        """Get an available wifi card and mark it as in use."""
+    def lease_card(self, for_scanning: bool = False) -> Optional[WifiCard]:
+        """
+        Get an available wifi card and mark it as in use.
+
+        Args:
+            for_scanning: If True, returns the dedicated scanning card.
+                         If False, returns an available connection card only.
+
+        Returns:
+            Available WifiCard or None if no cards available
+        """
         with self._lock:
-            for card in self.cards:
-                if not card.in_use:
-                    card.in_use = True
-                    return card
-            return None
+            if for_scanning:
+                # Return the dedicated scanning card if available
+                if self._scanning_card and not self._scanning_card.in_use:
+                    self._scanning_card.in_use = True
+                    if self._card_state_manager:
+                        self._card_state_manager.update_card_state(
+                            self._scanning_card.interface, CardState.SCANNING, in_use=True
+                        )
+                    return self._scanning_card
+                return None
+            else:
+                # Return an available connection card (not the scanning card)
+                for card in self.cards:
+                    if card == self._scanning_card:
+                        # Skip the scanning card - it's reserved for scanning only
+                        continue
+                    if not card.in_use:
+                        card.in_use = True
+                        if self._card_state_manager:
+                            self._card_state_manager.update_card_state(
+                                card.interface, CardState.CONNECTING, in_use=True
+                            )
+                        return card
+                return None
 
     def get_card(self) -> Optional[WifiCard]:
         """Alias for lease_card() for backwards compatibility with modules."""
@@ -792,6 +837,13 @@ class WifiCardManager:
         with self._lock:
             if card in self.cards:
                 card.in_use = False
+                if self._card_state_manager:
+                    # Determine the appropriate state based on connection status
+                    state = CardState.CONNECTED if card.is_connected() else CardState.IDLE
+                    connected_ssid = card.get_connected_ssid() if card.is_connected() else None
+                    self._card_state_manager.update_card_state(
+                        card.interface, state, in_use=False, connected_ssid=connected_ssid
+                    )
 
     def get_all_cards(self) -> list[WifiCard]:
         """Get list of all wifi cards."""
@@ -808,16 +860,46 @@ class WifiCardManager:
         with self._lock:
             return len(self.cards) > 0
 
+    def get_scanning_card(self) -> Optional[WifiCard]:
+        """
+        Get the dedicated scanning card.
+
+        Returns:
+            The WifiCard designated for scanning, or None if not assigned
+        """
+        with self._lock:
+            return self._scanning_card
+
+    def get_connection_cards(self) -> list[WifiCard]:
+        """
+        Get all cards available for connections (excludes scanning card).
+
+        Returns:
+            List of WifiCards available for connections
+        """
+        with self._lock:
+            return [card for card in self.cards if card != self._scanning_card]
+
     def get_status(self) -> dict:
         """Get status information about WiFi cards."""
         with self._lock:
-            return {
+            status = {
                 'total_cards': len(self.cards),
                 'available_cards': sum(1 for c in self.cards if not c.in_use),
                 'in_use_cards': sum(1 for c in self.cards if c.in_use),
                 'card_interfaces': [c.interface for c in self.cards],
                 'initialization_errors': self.initialization_errors,
+                'scanning_card': self._scanning_card.interface if self._scanning_card else None,
+                'connection_cards': [
+                    c.interface for c in self.cards if c != self._scanning_card
+                ],
             }
+
+            # Add card state manager status if available
+            if self._card_state_manager:
+                status['card_state_manager'] = self._card_state_manager.get_status()
+
+            return status
 
 
 class NetworkScanner:
@@ -846,24 +928,33 @@ class NetworkScanner:
             self.scan_thread = None
 
     def _scan_worker(self):
-        """Background worker that continuously scans for networks"""
+        """
+        Background worker that continuously scans for networks.
+
+        Uses the dedicated scanning card to prevent interference with
+        connection operations on other cards.
+        """
         config = get_config()
         scan_interval = config.scanner.scan_interval
 
         while self.scanning:
             card = None
             try:
-                # Get an available wifi card
-                card = self.card_manager.lease_card()
+                # Get the dedicated scanning card
+                card = self.card_manager.lease_card(for_scanning=True)
                 if not card:
-                    logger.error('No wifi cards available for scanning')
+                    logger.error('Scanning card not available')
                     time.sleep(1)
                     continue
+
+                logger.debug(f'Starting scan on dedicated scanning card: {card.interface}')
 
                 # Scan for networks
                 networks = card.scan()
                 self.scan_results = networks
                 self.scan_queue.put(networks)
+
+                logger.debug(f'Scan completed, found {len(networks)} networks')
 
                 # Wait before scanning again
                 time.sleep(scan_interval)

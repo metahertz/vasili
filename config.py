@@ -67,6 +67,17 @@ class LoggingConfig:
 
 
 @dataclass
+class MongoDBConfig:
+    """MongoDB settings for card state coordination."""
+
+    enabled: bool = True
+    host: str = 'localhost'
+    port: int = 27017
+    database: str = 'vasili'
+    collection: str = 'card_states'
+
+
+@dataclass
 class VasiliConfig:
     """Main configuration container."""
 
@@ -75,6 +86,7 @@ class VasiliConfig:
     scanner: ScannerConfig = field(default_factory=ScannerConfig)
     web: WebConfig = field(default_factory=WebConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
+    mongodb: MongoDBConfig = field(default_factory=MongoDBConfig)
 
     @classmethod
     def from_dict(cls, data: dict) -> 'VasiliConfig':
@@ -113,6 +125,16 @@ class VasiliConfig:
             log_data = data['logging']
             config.logging = LoggingConfig(
                 level=log_data.get('level', 'INFO'),
+            )
+
+        if 'mongodb' in data:
+            mongo_data = data['mongodb']
+            config.mongodb = MongoDBConfig(
+                enabled=mongo_data.get('enabled', True),
+                host=mongo_data.get('host', 'localhost'),
+                port=mongo_data.get('port', 27017),
+                database=mongo_data.get('database', 'vasili'),
+                collection=mongo_data.get('collection', 'card_states'),
             )
 
         return config

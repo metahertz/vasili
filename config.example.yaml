@@ -46,3 +46,18 @@ web:
 logging:
   # Log level: DEBUG, INFO, WARNING, ERROR, CRITICAL
   level: "INFO"
+
+# MongoDB settings for multi-card state coordination
+# MongoDB is used to coordinate card roles and states across the system
+mongodb:
+  # Enable MongoDB for card state coordination
+  # Set to false to use in-memory state management (no persistence)
+  enabled: true
+
+  # MongoDB connection settings
+  host: "localhost"
+  port: 27017
+
+  # Database and collection names
+  database: "vasili"
+  collection: "card_states"
