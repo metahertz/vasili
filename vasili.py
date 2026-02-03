@@ -203,10 +203,7 @@ class ConnectionResult:
 
         # Weighted average
         total_score = (
-            download_score * 0.4 +
-            signal_score * 0.3 +
-            upload_score * 0.2 +
-            ping_score * 0.1
+            download_score * 0.4 + signal_score * 0.3 + upload_score * 0.2 + ping_score * 0.1
         )
 
         return round(total_score, 2)
@@ -218,7 +215,7 @@ class PerformanceMetricsStore:
     Gracefully handles MongoDB unavailability.
     """
 
-    def __init__(self, mongo_uri: str = "mongodb://localhost:27017/", db_name: str = "vasili"):
+    def __init__(self, mongo_uri: str = 'mongodb://localhost:27017/', db_name: str = 'vasili'):
         """
         Initialize the metrics store.
 
@@ -240,16 +237,16 @@ class PerformanceMetricsStore:
             self.db = self.client[db_name]
             self.metrics_collection = self.db['connection_metrics']
             self._available = True
-            logger.info(f"Connected to MongoDB at {mongo_uri}")
+            logger.info(f'Connected to MongoDB at {mongo_uri}')
 
             # Create indexes for efficient queries
-            self.metrics_collection.create_index([("ssid", 1), ("timestamp", DESCENDING)])
-            self.metrics_collection.create_index([("bssid", 1)])
+            self.metrics_collection.create_index([('ssid', 1), ('timestamp', DESCENDING)])
+            self.metrics_collection.create_index([('bssid', 1)])
         except (ConnectionFailure, OperationFailure) as e:
-            logger.warning(f"MongoDB not available: {e}. Metrics storage disabled.")
+            logger.warning(f'MongoDB not available: {e}. Metrics storage disabled.')
             self._available = False
         except Exception as e:
-            logger.error(f"Failed to initialize MongoDB: {e}. Metrics storage disabled.")
+            logger.error(f'Failed to initialize MongoDB: {e}. Metrics storage disabled.')
             self._available = False
 
     def is_available(self) -> bool:
@@ -283,15 +280,15 @@ class PerformanceMetricsStore:
                 'interface': connection.interface,
                 'score': connection.calculate_score(),
                 'timestamp': time.time(),
-                'connected': connection.connected
+                'connected': connection.connected,
             }
 
             self.metrics_collection.insert_one(metric)
-            logger.debug(f"Stored metrics for {connection.network.ssid} (score: {metric['score']})")
+            logger.debug(f'Stored metrics for {connection.network.ssid} (score: {metric["score"]})')
             return True
 
         except Exception as e:
-            logger.error(f"Failed to store metrics: {e}")
+            logger.error(f'Failed to store metrics: {e}')
             return False
 
     def get_network_history(self, ssid: str, limit: int = 10) -> list[dict]:
@@ -309,12 +306,14 @@ class PerformanceMetricsStore:
             return []
 
         try:
-            cursor = self.metrics_collection.find(
-                {'ssid': ssid}
-            ).sort('timestamp', DESCENDING).limit(limit)
+            cursor = (
+                self.metrics_collection.find({'ssid': ssid})
+                .sort('timestamp', DESCENDING)
+                .limit(limit)
+            )
             return list(cursor)
         except Exception as e:
-            logger.error(f"Failed to retrieve network history: {e}")
+            logger.error(f'Failed to retrieve network history: {e}')
             return []
 
     def get_average_score(self, ssid: str) -> Optional[float]:
@@ -333,18 +332,14 @@ class PerformanceMetricsStore:
         try:
             pipeline = [
                 {'$match': {'ssid': ssid, 'connected': True}},
-                {'$group': {
-                    '_id': '$ssid',
-                    'avg_score': {'$avg': '$score'},
-                    'count': {'$sum': 1}
-                }}
+                {'$group': {'_id': '$ssid', 'avg_score': {'$avg': '$score'}, 'count': {'$sum': 1}}},
             ]
             result = list(self.metrics_collection.aggregate(pipeline))
             if result:
                 return round(result[0]['avg_score'], 2)
             return None
         except Exception as e:
-            logger.error(f"Failed to calculate average score: {e}")
+            logger.error(f'Failed to calculate average score: {e}')
             return None
 
     def get_best_networks(self, limit: int = 5) -> list[dict]:
@@ -363,28 +358,30 @@ class PerformanceMetricsStore:
         try:
             pipeline = [
                 {'$match': {'connected': True}},
-                {'$group': {
-                    '_id': '$ssid',
-                    'avg_score': {'$avg': '$score'},
-                    'avg_download': {'$avg': '$download_speed'},
-                    'avg_upload': {'$avg': '$upload_speed'},
-                    'avg_ping': {'$avg': '$ping'},
-                    'avg_signal': {'$avg': '$signal_strength'},
-                    'connection_count': {'$sum': 1}
-                }},
+                {
+                    '$group': {
+                        '_id': '$ssid',
+                        'avg_score': {'$avg': '$score'},
+                        'avg_download': {'$avg': '$download_speed'},
+                        'avg_upload': {'$avg': '$upload_speed'},
+                        'avg_ping': {'$avg': '$ping'},
+                        'avg_signal': {'$avg': '$signal_strength'},
+                        'connection_count': {'$sum': 1},
+                    }
+                },
                 {'$sort': {'avg_score': -1}},
-                {'$limit': limit}
+                {'$limit': limit},
             ]
             return list(self.metrics_collection.aggregate(pipeline))
         except Exception as e:
-            logger.error(f"Failed to get best networks: {e}")
+            logger.error(f'Failed to get best networks: {e}')
             return []
 
     def close(self):
         """Close the MongoDB connection."""
         if self.client:
             self.client.close()
-            logger.info("MongoDB connection closed")
+            logger.info('MongoDB connection closed')
 
 
 class NetworkBridge:
@@ -1373,9 +1370,7 @@ class WifiManager:
             List of ConnectionResult objects sorted by score descending
         """
         return sorted(
-            self.suitable_connections,
-            key=lambda conn: conn.calculate_score(),
-            reverse=True
+            self.suitable_connections, key=lambda conn: conn.calculate_score(), reverse=True
         )
 
     def scan_and_connect(self):
@@ -1510,20 +1505,22 @@ def stop_connection():
 def get_sorted_connections():
     """Get connections sorted by score (best first)."""
     sorted_conns = wifi_manager.get_sorted_connections()
-    return jsonify([
-        {
-            'ssid': conn.network.ssid,
-            'bssid': conn.network.bssid,
-            'score': conn.calculate_score(),
-            'download_speed': conn.download_speed,
-            'upload_speed': conn.upload_speed,
-            'ping': conn.ping,
-            'signal_strength': conn.network.signal_strength,
-            'interface': conn.interface,
-            'connection_method': conn.connection_method
-        }
-        for conn in sorted_conns
-    ])
+    return jsonify(
+        [
+            {
+                'ssid': conn.network.ssid,
+                'bssid': conn.network.bssid,
+                'score': conn.calculate_score(),
+                'download_speed': conn.download_speed,
+                'upload_speed': conn.upload_speed,
+                'ping': conn.ping,
+                'signal_strength': conn.network.signal_strength,
+                'interface': conn.interface,
+                'connection_method': conn.connection_method,
+            }
+            for conn in sorted_conns
+        ]
+    )
 
 
 @app.route('/api/metrics/network/<ssid>')
@@ -1531,21 +1528,23 @@ def get_network_metrics(ssid):
     """Get historical metrics for a specific network."""
     history = wifi_manager.metrics_store.get_network_history(ssid)
     avg_score = wifi_manager.metrics_store.get_average_score(ssid)
-    return jsonify({
-        'ssid': ssid,
-        'average_score': avg_score,
-        'history': [
-            {
-                'score': h.get('score'),
-                'download_speed': h.get('download_speed'),
-                'upload_speed': h.get('upload_speed'),
-                'ping': h.get('ping'),
-                'signal_strength': h.get('signal_strength'),
-                'timestamp': h.get('timestamp'),
-            }
-            for h in history
-        ]
-    })
+    return jsonify(
+        {
+            'ssid': ssid,
+            'average_score': avg_score,
+            'history': [
+                {
+                    'score': h.get('score'),
+                    'download_speed': h.get('download_speed'),
+                    'upload_speed': h.get('upload_speed'),
+                    'ping': h.get('ping'),
+                    'signal_strength': h.get('signal_strength'),
+                    'timestamp': h.get('timestamp'),
+                }
+                for h in history
+            ],
+        }
+    )
 
 
 @app.route('/api/metrics/best')
