@@ -123,7 +123,9 @@ class TestWifiCardManagerLeaseCard:
 
         leased_card = manager.lease_card()
 
-        assert leased_card == mock_card1
+        # With multi-card orchestration, lease_card() defaults to connection cards
+        # mock_card1 is the scanning card (first card), so mock_card2 is returned
+        assert leased_card == mock_card2
         assert leased_card.in_use is True
 
     @patch('vasili.netifaces.interfaces')
