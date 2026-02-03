@@ -3,7 +3,17 @@
 from unittest.mock import Mock, patch
 
 
-from vasili import NetworkScanner, WifiCard, WifiCardManager, WifiNetwork
+from vasili import NetworkScanner, WifiCardManager, WifiNetwork
+
+
+def create_mock_card(interface: str, in_use: bool = False) -> Mock:
+    """Create a properly configured mock WifiCard for testing."""
+    mock_card = Mock()
+    mock_card.interface = interface
+    mock_card.in_use = in_use
+    mock_card.is_connected.return_value = False
+    mock_card.get_connected_ssid.return_value = None
+    return mock_card
 
 
 class TestNetworkScannerInit:
@@ -89,8 +99,7 @@ class TestNetworkScannerScanWorker:
     def test_scan_worker_successful_scan(self, mock_sleep):
         """Test scan worker performs scan and updates results"""
         mock_card_manager = Mock(spec=WifiCardManager)
-        mock_card = Mock(spec=WifiCard)
-        mock_card.interface = 'wlan0'  # Required for multi-card orchestration
+        mock_card = create_mock_card('wlan0')
 
         # Create test networks
         network1 = WifiNetwork(
@@ -124,8 +133,8 @@ class TestNetworkScannerScanWorker:
 
         scanner._scan_worker()
 
-        # Verify card was leased and returned
-        mock_card_manager.lease_card.assert_called()
+        # Verify card was leased (with for_scanning=True) and returned
+        mock_card_manager.lease_card.assert_called_with(for_scanning=True)
         mock_card.scan.assert_called_once()
         mock_card_manager.return_card.assert_called_once_with(mock_card)
 
@@ -160,7 +169,7 @@ class TestNetworkScannerScanWorker:
     def test_scan_worker_scan_exception(self, mock_sleep):
         """Test scan worker handles exceptions during scan"""
         mock_card_manager = Mock(spec=WifiCardManager)
-        mock_card = Mock(spec=WifiCard)
+        mock_card = create_mock_card('wlan0')
         mock_card.scan.side_effect = Exception('Scan error')
         mock_card_manager.lease_card.return_value = mock_card
 
