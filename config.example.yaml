@@ -46,3 +46,15 @@ web:
 logging:
   # Log level: DEBUG, INFO, WARNING, ERROR, CRITICAL
   level: "INFO"
+
+# Captive Portal settings
+captive_portal:
+  # MongoDB connection string for storing portal patterns
+  # Set to empty string to disable pattern storage (portal detection still works)
+  mongodb_uri: "mongodb://localhost:27017/"
+
+  # Detection timeout in seconds
+  detection_timeout: 10
+
+  # Authentication timeout in seconds
+  auth_timeout: 15

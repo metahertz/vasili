@@ -1,4 +1,6 @@
 flask
+flask-socketio
+pymongo
 wifi
 speedtest-cli
 netifaces
@@ -7,4 +9,4 @@ dataclasses
 typing
 pyyaml
 pyarchops-dnsmasq
-pymongo
+requests

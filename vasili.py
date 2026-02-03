@@ -17,9 +17,11 @@ import netifaces
 import speedtest
 import wifi
 from flask import Flask, jsonify, render_template, request
-from pyarchops_dnsmasq import dnsmasq
+from flask_socketio import SocketIO, emit
 from pymongo import MongoClient, DESCENDING
 from pymongo.errors import ConnectionFailure, OperationFailure
+from pyarchops_dnsmasq import dnsmasq
+from datetime import datetime
 
 from config import VasiliConfig, apply_logging_config, load_config
 from logging_config import setup_logging, get_logger
@@ -1387,6 +1389,7 @@ class WifiManager:
         logger.info('Starting scan_and_connect loop')
         self.status['scanning'] = True
         self.status['monitoring'] = True
+        emit_status_update()
 
         # Start the background scanner and connection monitor
         self.scanner.start_scan()
@@ -1408,6 +1411,7 @@ class WifiManager:
                     1 for card in self.card_manager.get_all_cards() if card.in_use
                 )
                 self.status['active_modules'] = len(self.modules)
+                emit_status_update()
 
                 # Try to connect to each network using available modules
                 for network in networks:
@@ -1436,13 +1440,26 @@ class WifiManager:
                                     )
                                     self.suitable_connections.append(result)
 
-                                    # Store metrics to MongoDB
+                                    # Store metrics to MongoDB (scoring system)
                                     self.metrics_store.store_metrics(result)
+
+                                    # Store connection history (history tracking)
+                                    speed_data = {
+                                        'download': result.download_speed,
+                                        'upload': result.upload_speed,
+                                        'ping': result.ping,
+                                    }
+                                    store_connection_history(
+                                        network, True, speed_data, result.interface
+                                    )
 
                                     # Add the connected card to monitoring for auto-reconnect
                                     card = self._get_card_for_interface(result.interface)
                                     if card:
                                         self.connection_monitor.add_card(card)
+
+                                    # Emit update to all connected clients
+                                    emit_connections_update()
 
                                     # Only need one successful connection per network
                                     break
@@ -1451,6 +1468,8 @@ class WifiManager:
                                         f'Module {module.__class__.__name__} failed to '
                                         f'connect to {network.ssid}'
                                     )
+                                    # Store failed connection attempt
+                                    store_connection_history(network, False)
                         except Exception as e:
                             logger.error(
                                 f'Error with module {module.__class__.__name__} '
@@ -1469,7 +1488,92 @@ class WifiManager:
 
 # Flask web interface
 app = Flask(__name__)
+app.config['SECRET_KEY'] = 'vasili-secret-key-change-in-production'
+socketio = SocketIO(app, cors_allowed_origins='*')
 wifi_manager = WifiManager()
+
+# MongoDB setup
+mongo_client = None
+db = None
+history_collection = None
+
+try:
+    # Try to connect to MongoDB (localhost by default)
+    mongo_client = MongoClient('mongodb://localhost:27017/', serverSelectionTimeoutMS=2000)
+    # Test the connection
+    mongo_client.admin.command('ping')
+    db = mongo_client['vasili']
+    history_collection = db['connection_history']
+    logger.info('Connected to MongoDB successfully')
+except ConnectionFailure:
+    logger.warning('MongoDB not available - history features will be disabled')
+except Exception as e:
+    logger.warning(f'MongoDB connection error: {e} - history features will be disabled')
+
+
+def store_connection_history(
+    network: WifiNetwork, success: bool, speed_test: dict = None, interface: str = None
+):
+    """Store connection attempt in MongoDB history."""
+    if history_collection is None:
+        return
+
+    try:
+        history_entry = {
+            'timestamp': datetime.utcnow(),
+            'ssid': network.ssid,
+            'bssid': network.bssid,
+            'signal_strength': network.signal_strength,
+            'channel': network.channel,
+            'encryption_type': network.encryption_type,
+            'success': success,
+            'interface': interface,
+        }
+
+        if speed_test:
+            history_entry['download_speed'] = speed_test.get('download', 0)
+            history_entry['upload_speed'] = speed_test.get('upload', 0)
+            history_entry['ping'] = speed_test.get('ping', 0)
+
+        history_collection.insert_one(history_entry)
+        logger.debug(f'Stored connection history for {network.ssid}')
+    except Exception as e:
+        logger.error(f'Failed to store connection history: {e}')
+
+
+def emit_status_update():
+    """Emit current status to all connected clients."""
+    try:
+        socketio.emit('status_update', wifi_manager.status, broadcast=True)
+    except Exception as e:
+        logger.error(f'Failed to emit status update: {e}')
+
+
+def emit_connections_update():
+    """Emit current connections to all connected clients."""
+    try:
+        connections_data = []
+        for conn in wifi_manager.suitable_connections:
+            conn_dict = {
+                'network': {
+                    'ssid': conn.network.ssid,
+                    'bssid': conn.network.bssid,
+                    'signal_strength': conn.network.signal_strength,
+                    'channel': conn.network.channel,
+                    'encryption_type': conn.network.encryption_type,
+                    'is_open': conn.network.is_open,
+                },
+                'download_speed': conn.download_speed,
+                'upload_speed': conn.upload_speed,
+                'ping': conn.ping,
+                'connected': conn.connected,
+                'connection_method': conn.connection_method,
+                'interface': conn.interface,
+            }
+            connections_data.append(conn_dict)
+        socketio.emit('connections_update', {'connections': connections_data}, broadcast=True)
+    except Exception as e:
+        logger.error(f'Failed to emit connections update: {e}')
 
 
 @app.route('/')
@@ -1492,12 +1596,14 @@ def get_connections():
 @app.route('/api/use_connection/<int:index>', methods=['POST'])
 def use_connection(index):
     success = wifi_manager.use_connection(index)
+    emit_status_update()
     return jsonify({'success': success})
 
 
 @app.route('/api/stop_connection', methods=['POST'])
 def stop_connection():
     wifi_manager.stop_current_connection()
+    emit_status_update()
     return jsonify({'success': True})
 
 
@@ -1554,6 +1660,42 @@ def get_best_networks():
     return jsonify(best)
 
 
+@app.route('/api/history')
+def get_history():
+    """Get connection history from MongoDB."""
+    if history_collection is None:
+        return jsonify({'history': [], 'available': False})
+
+    try:
+        # Get last 50 entries, newest first
+        history = list(history_collection.find().sort('timestamp', -1).limit(50))
+
+        # Convert ObjectId to string for JSON serialization
+        for entry in history:
+            entry['_id'] = str(entry['_id'])
+            entry['timestamp'] = entry['timestamp'].isoformat()
+
+        return jsonify({'history': history, 'available': True})
+    except Exception as e:
+        logger.error(f'Failed to fetch history: {e}')
+        return jsonify({'history': [], 'available': False, 'error': str(e)})
+
+
+@socketio.on('connect')
+def handle_connect():
+    """Handle client connection."""
+    logger.info('Client connected to websocket')
+    # Send initial status to the newly connected client
+    emit('status_update', wifi_manager.status)
+    emit_connections_update()
+
+
+@socketio.on('disconnect')
+def handle_disconnect():
+    """Handle client disconnection."""
+    logger.info('Client disconnected from websocket')
+
+
 def main():
     # Load configuration
     config = get_config()
@@ -1566,7 +1708,7 @@ def main():
     # Start web interface if enabled
     if config.web.enabled:
         logger.info(f'Starting web interface on {config.web.host}:{config.web.port}')
-        app.run(host=config.web.host, port=config.web.port)
+        socketio.run(app, host=config.web.host, port=config.web.port, allow_unsafe_werkzeug=True)
     else:
         logger.info('Web interface disabled, running in headless mode')
         # Keep the main thread alive
