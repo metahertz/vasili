@@ -85,7 +85,7 @@ class TestScanAndConnect:
         # Wait for scan to complete
         networks = scanner.get_next_scan()
 
-        assert len(networks) == 3
+        assert len(networks) == 4
         assert any(n.ssid == 'OpenCafe' for n in networks)
 
         # Stop scanner

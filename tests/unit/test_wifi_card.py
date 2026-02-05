@@ -33,12 +33,14 @@ class TestWifiCard:
         card = WifiCard('wlan0')
         networks = card.scan()
 
-        assert len(networks) == 3
+        assert len(networks) == 4
         assert networks[0].ssid == 'OpenCafe'
         assert networks[0].is_open is True
         assert networks[1].ssid == 'SecureHome'
         assert networks[1].is_open is False
         assert networks[1].encryption_type == 'WPA2'
+        assert networks[3].ssid == 'ModernWiFi'
+        assert networks[3].encryption_type == 'WPA3'
 
     def test_scan_empty_results(self, mock_subprocess_scan_empty):
         """Test scan with no networks found."""
@@ -200,6 +202,6 @@ class TestWifiCard:
         networks1 = card.scan()
         networks2 = card.scan()
 
-        assert len(networks1) == 3
-        assert len(networks2) == 3
+        assert len(networks1) == 4
+        assert len(networks2) == 4
         assert networks1[0].ssid == networks2[0].ssid
