@@ -705,6 +705,9 @@ class WifiCard:
                         current_network.encryption_type = 'WPA2'
                     elif 'IE: WPA Version' in line:
                         current_network.encryption_type = 'WPA'
+                    elif 'Authentication Suites' in line and 'SAE' in line:
+                        # WPA3 uses SAE (Simultaneous Authentication of Equals)
+                        current_network.encryption_type = 'WPA3'
 
             # Add the last network if exists
             if current_network:

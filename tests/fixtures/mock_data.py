@@ -27,6 +27,17 @@ IWLIST_SCAN_OUTPUT = """wlan0     Scan completed :
                     Encryption key:on
                     ESSID:"WeakSignal"
                     IE: WPA Version 1
+          Cell 04 - Address: 77:88:99:AA:BB:CC
+                    Channel:36
+                    Frequency:5.18 GHz (Channel 36)
+                    Quality=60/70  Signal level=-50 dBm
+                    Encryption key:on
+                    ESSID:"ModernWiFi"
+                    Bit Rates:600 Mb/s
+                    IE: IEEE 802.11i/WPA2 Version 1
+                        Group Cipher : CCMP
+                        Pairwise Ciphers (1) : CCMP
+                        Authentication Suites (1) : SAE
 """
 
 # Empty scan output
@@ -58,6 +69,14 @@ SAMPLE_NETWORKS = [
         'signal': 40,  # -80 dBm converted to percentage
         'channel': 1,
         'encryption_type': 'WPA',
+    },
+    {
+        'ssid': 'ModernWiFi',
+        'bssid': '77:88:99:AA:BB:CC',
+        'is_open': False,
+        'signal': 100,  # -50 dBm converted to percentage
+        'channel': 36,
+        'encryption_type': 'WPA3',
     },
 ]
 

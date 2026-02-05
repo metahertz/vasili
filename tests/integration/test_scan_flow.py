@@ -20,13 +20,15 @@ class TestScanFlow:
 
         # Perform scan
         networks = card.scan()
-        assert len(networks) == 3
+        assert len(networks) == 4
 
         # Verify network data
         assert networks[0].ssid == 'OpenCafe'
         assert networks[0].is_open is True
         assert networks[1].ssid == 'SecureHome'
         assert networks[1].encryption_type == 'WPA2'
+        assert networks[3].ssid == 'ModernWiFi'
+        assert networks[3].encryption_type == 'WPA3'
 
         # Return card
         manager.return_card(card)
@@ -50,8 +52,8 @@ class TestScanFlow:
         networks2 = conn_card.scan()
 
         # Both should get results
-        assert len(networks1) == 3
-        assert len(networks2) == 3
+        assert len(networks1) == 4
+        assert len(networks2) == 4
 
         # Return cards
         manager.return_card(scan_card)
@@ -114,11 +116,11 @@ class TestScanFlow:
 
         # First scan
         networks1 = card.scan()
-        assert len(networks1) == 3
+        assert len(networks1) == 4
 
         # Second scan
         networks2 = card.scan()
-        assert len(networks2) == 3
+        assert len(networks2) == 4
 
         # Should get same networks (mock returns same data)
         assert networks1[0].ssid == networks2[0].ssid
@@ -161,9 +163,10 @@ class TestScanFlow:
         networks = card.scan()
         encrypted_networks = [n for n in networks if not n.is_open]
 
-        assert len(encrypted_networks) == 2
+        assert len(encrypted_networks) == 3
         assert 'SecureHome' in [n.ssid for n in encrypted_networks]
         assert 'WeakSignal' in [n.ssid for n in encrypted_networks]
+        assert 'ModernWiFi' in [n.ssid for n in encrypted_networks]
 
         manager.return_card(card)
 
@@ -177,5 +180,18 @@ class TestScanFlow:
 
         assert len(wpa2_networks) == 1
         assert wpa2_networks[0].ssid == 'SecureHome'
+
+        manager.return_card(card)
+
+    def test_scan_identifies_wpa3_networks(self, all_mocks):
+        """Test identification of WPA3 encrypted networks."""
+        manager = WifiCardManager()
+        card = manager.lease_card()
+
+        networks = card.scan()
+        wpa3_networks = [n for n in networks if n.encryption_type == 'WPA3']
+
+        assert len(wpa3_networks) == 1
+        assert wpa3_networks[0].ssid == 'ModernWiFi'
 
         manager.return_card(card)
