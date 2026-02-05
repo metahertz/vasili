@@ -58,3 +58,23 @@ captive_portal:
 
   # Authentication timeout in seconds
   auth_timeout: 15
+
+# Auto-selection mode settings
+auto_selection:
+  # Enable automatic connection selection and switching
+  # When enabled, Vasili will automatically select the best available connection
+  # and switch to better connections as they become available
+  enabled: false
+
+  # Seconds between evaluations of available connections
+  # The auto-selector will periodically check if a better connection is available
+  evaluation_interval: 30
+
+  # Minimum score improvement required to trigger a connection switch
+  # This prevents excessive switching for marginal improvements
+  # Score range is 0-100, so 10.0 means a 10% improvement is required
+  min_score_improvement: 10.0
+
+  # Initial delay before first auto-selection (seconds)
+  # This allows connections to stabilize after startup
+  initial_delay: 10
