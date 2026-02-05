@@ -1305,6 +1305,225 @@ class ConnectionMonitor:
             return list(self._monitored_cards)
 
 
+class AutoSelector:
+    """
+    Automatically selects and uses the best available connection.
+
+    This class periodically evaluates all available connections and automatically
+    switches to a better connection if the score improvement exceeds the configured
+    threshold.
+    """
+
+    def __init__(
+        self,
+        wifi_manager,
+        evaluation_interval: int = 30,
+        min_score_improvement: float = 10.0,
+        initial_delay: int = 10,
+    ):
+        """
+        Initialize the auto-selector.
+
+        Args:
+            wifi_manager: Reference to the WifiManager instance
+            evaluation_interval: Seconds between connection evaluations (default: 30)
+            min_score_improvement: Minimum score improvement to trigger switch (default: 10.0)
+            initial_delay: Seconds to wait before first evaluation (default: 10)
+        """
+        self.wifi_manager = wifi_manager
+        self.evaluation_interval = evaluation_interval
+        self.min_score_improvement = min_score_improvement
+        self.initial_delay = initial_delay
+        self._enabled = False
+        self._running = False
+        self._selector_thread: Optional[threading.Thread] = None
+        self._last_switch_time: float = 0
+        self._evaluation_count = 0
+
+    def enable(self):
+        """Enable auto-selection mode."""
+        if self._enabled:
+            return
+        self._enabled = True
+        logger.info('Auto-selection mode enabled')
+        emit_status_update()
+
+    def disable(self):
+        """Disable auto-selection mode."""
+        if not self._enabled:
+            return
+        self._enabled = False
+        logger.info('Auto-selection mode disabled')
+        emit_status_update()
+
+    def is_enabled(self) -> bool:
+        """Check if auto-selection is enabled."""
+        return self._enabled
+
+    def start(self):
+        """Start the auto-selection thread."""
+        if self._running:
+            return
+
+        self._running = True
+        self._selector_thread = threading.Thread(target=self._selector_worker, daemon=True)
+        self._selector_thread.start()
+        logger.info('Auto-selector thread started')
+
+    def stop(self):
+        """Stop the auto-selection thread."""
+        self._running = False
+        if self._selector_thread:
+            self._selector_thread.join(timeout=self.evaluation_interval + 5)
+            self._selector_thread = None
+        logger.info('Auto-selector thread stopped')
+
+    def _selector_worker(self):
+        """Background worker that evaluates and switches connections."""
+        # Wait for initial delay to allow connections to stabilize
+        if self.initial_delay > 0:
+            logger.info(f'Auto-selector waiting {self.initial_delay}s before first evaluation')
+            time.sleep(self.initial_delay)
+
+        while self._running:
+            if self._enabled:
+                try:
+                    self._evaluate_and_switch()
+                except Exception as e:
+                    logger.error(f'Error in auto-selector evaluation: {e}')
+
+            # Wait before next evaluation
+            time.sleep(self.evaluation_interval)
+
+    def _evaluate_and_switch(self):
+        """Evaluate available connections and switch if a better one is found."""
+        self._evaluation_count += 1
+
+        # Get current bridge info
+        current_bridge = self.wifi_manager.status.get('current_bridge')
+        if not current_bridge:
+            # No active bridge, try to select best available connection
+            logger.debug('No active connection, attempting to select best available')
+            self._select_best_connection()
+            return
+
+        current_ssid = current_bridge.get('ssid')
+        current_interface = current_bridge.get('wifi_interface')
+
+        # Find current connection in suitable_connections
+        current_connection = None
+        for conn in self.wifi_manager.suitable_connections:
+            if conn.network.ssid == current_ssid and conn.interface == current_interface:
+                current_connection = conn
+                break
+
+        if not current_connection:
+            logger.warning(
+                f'Current connection {current_ssid} not found in suitable_connections'
+            )
+            return
+
+        current_score = current_connection.calculate_score()
+
+        # Get all available connections sorted by score
+        sorted_connections = self.wifi_manager.get_sorted_connections()
+
+        if not sorted_connections:
+            logger.debug('No connections available for evaluation')
+            return
+
+        # Find the best connection
+        best_connection = sorted_connections[0]
+        best_score = best_connection.calculate_score()
+
+        # Check if we should switch
+        score_improvement = best_score - current_score
+
+        logger.debug(
+            f'Auto-selector evaluation #{self._evaluation_count}: '
+            f'Current={current_ssid} (score={current_score:.2f}), '
+            f'Best={best_connection.network.ssid} (score={best_score:.2f}), '
+            f'Improvement={score_improvement:.2f}'
+        )
+
+        if score_improvement >= self.min_score_improvement:
+            # Find the index of the best connection
+            try:
+                best_index = self.wifi_manager.suitable_connections.index(best_connection)
+            except ValueError:
+                logger.error('Best connection not found in suitable_connections list')
+                return
+
+            logger.info(
+                f'Auto-selector switching from {current_ssid} (score={current_score:.2f}) '
+                f'to {best_connection.network.ssid} (score={best_score:.2f}), '
+                f'improvement={score_improvement:.2f}'
+            )
+
+            # Perform the switch
+            success = self.wifi_manager.use_connection(best_index)
+
+            if success:
+                self._last_switch_time = time.time()
+                logger.info(
+                    f'Auto-selector successfully switched to {best_connection.network.ssid}'
+                )
+                emit_status_update()
+                emit_connections_update()
+            else:
+                logger.error(
+                    f'Auto-selector failed to switch to {best_connection.network.ssid}'
+                )
+        else:
+            logger.debug(
+                f'Current connection is optimal (improvement={score_improvement:.2f} < '
+                f'threshold={self.min_score_improvement})'
+            )
+
+    def _select_best_connection(self):
+        """Select and use the best available connection when none is active."""
+        sorted_connections = self.wifi_manager.get_sorted_connections()
+
+        if not sorted_connections:
+            logger.debug('No connections available to select')
+            return
+
+        best_connection = sorted_connections[0]
+        best_score = best_connection.calculate_score()
+
+        try:
+            best_index = self.wifi_manager.suitable_connections.index(best_connection)
+        except ValueError:
+            logger.error('Best connection not found in suitable_connections list')
+            return
+
+        logger.info(
+            f'Auto-selector selecting best connection: {best_connection.network.ssid} '
+            f'(score={best_score:.2f})'
+        )
+
+        success = self.wifi_manager.use_connection(best_index)
+
+        if success:
+            self._last_switch_time = time.time()
+            logger.info(f'Auto-selector activated connection to {best_connection.network.ssid}')
+            emit_status_update()
+            emit_connections_update()
+        else:
+            logger.error(f'Auto-selector failed to activate {best_connection.network.ssid}')
+
+    def get_stats(self) -> dict:
+        """Get auto-selector statistics."""
+        return {
+            'enabled': self._enabled,
+            'running': self._running,
+            'evaluation_count': self._evaluation_count,
+            'last_switch_time': self._last_switch_time,
+            'evaluation_interval': self.evaluation_interval,
+            'min_score_improvement': self.min_score_improvement,
+        }
+
+
 class ConnectionModule:
     # Base class for connection modules
     def __init__(self, card_manager):
@@ -1325,6 +1544,20 @@ class WifiManager:
         self.modules = self._load_connection_modules()
         self.suitable_connections: list[ConnectionResult] = []
         self.metrics_store = PerformanceMetricsStore()
+
+        # Load auto-selection config
+        config = get_config()
+        self.auto_selector = AutoSelector(
+            wifi_manager=self,
+            evaluation_interval=config.auto_selection.evaluation_interval,
+            min_score_improvement=config.auto_selection.min_score_improvement,
+            initial_delay=config.auto_selection.initial_delay,
+        )
+
+        # Enable auto-selection if configured
+        if config.auto_selection.enabled:
+            self.auto_selector.enable()
+
         self.status = {
             'scanning': False,
             'monitoring': False,
@@ -1333,6 +1566,8 @@ class WifiManager:
             'current_bridge': None,
             'reconnect_events': 0,
             'metrics_available': self.metrics_store.is_available(),
+            'auto_selection_enabled': self.auto_selector.is_enabled(),
+            'auto_selection_running': False,
         }
         self.active_bridge = None
 
@@ -1448,6 +1683,24 @@ class WifiManager:
             self.suitable_connections, key=lambda conn: conn.calculate_score(), reverse=True
         )
 
+    def enable_auto_selection(self):
+        """Enable auto-selection mode."""
+        self.auto_selector.enable()
+        self.status['auto_selection_enabled'] = True
+        emit_status_update()
+
+    def disable_auto_selection(self):
+        """Disable auto-selection mode."""
+        self.auto_selector.disable()
+        self.status['auto_selection_enabled'] = False
+        emit_status_update()
+
+    def get_auto_selection_status(self) -> dict:
+        """Get auto-selection status and statistics."""
+        stats = self.auto_selector.get_stats()
+        stats['running'] = self.status.get('auto_selection_running', False)
+        return stats
+
     def scan_and_connect(self):
         """
         Main loop that scans for networks and attempts connections via modules.
@@ -1462,11 +1715,13 @@ class WifiManager:
         logger.info('Starting scan_and_connect loop')
         self.status['scanning'] = True
         self.status['monitoring'] = True
+        self.status['auto_selection_running'] = True
         emit_status_update()
 
-        # Start the background scanner and connection monitor
+        # Start the background scanner, connection monitor, and auto-selector
         self.scanner.start_scan()
         self.connection_monitor.start()
+        self.auto_selector.start()
 
         try:
             while True:
@@ -1554,8 +1809,10 @@ class WifiManager:
         finally:
             self.scanner.stop_scan()
             self.connection_monitor.stop()
+            self.auto_selector.stop()
             self.status['scanning'] = False
             self.status['monitoring'] = False
+            self.status['auto_selection_running'] = False
             logger.info('scan_and_connect loop stopped')
 
 
@@ -1752,6 +2009,27 @@ def get_history():
     except Exception as e:
         logger.error(f'Failed to fetch history: {e}')
         return jsonify({'history': [], 'available': False, 'error': str(e)})
+
+
+@app.route('/api/auto_select/enable', methods=['POST'])
+def enable_auto_selection():
+    """Enable auto-selection mode."""
+    wifi_manager.enable_auto_selection()
+    return jsonify({'success': True, 'enabled': True})
+
+
+@app.route('/api/auto_select/disable', methods=['POST'])
+def disable_auto_selection():
+    """Disable auto-selection mode."""
+    wifi_manager.disable_auto_selection()
+    return jsonify({'success': True, 'enabled': False})
+
+
+@app.route('/api/auto_select/status')
+def get_auto_selection_status():
+    """Get auto-selection status and statistics."""
+    status = wifi_manager.get_auto_selection_status()
+    return jsonify(status)
 
 
 @socketio.on('connect')

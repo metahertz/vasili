@@ -67,6 +67,20 @@ class LoggingConfig:
 
 
 @dataclass
+class AutoSelectionConfig:
+    """Auto-selection mode settings."""
+
+    # Enable automatic connection selection
+    enabled: bool = False
+    # Seconds between evaluations of available connections
+    evaluation_interval: int = 30
+    # Minimum score improvement required to switch connections
+    min_score_improvement: float = 10.0
+    # Initial delay before first auto-selection (seconds)
+    initial_delay: int = 10
+
+
+@dataclass
 class VasiliConfig:
     """Main configuration container."""
 
@@ -75,6 +89,7 @@ class VasiliConfig:
     scanner: ScannerConfig = field(default_factory=ScannerConfig)
     web: WebConfig = field(default_factory=WebConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
+    auto_selection: AutoSelectionConfig = field(default_factory=AutoSelectionConfig)
 
     @classmethod
     def from_dict(cls, data: dict) -> 'VasiliConfig':
@@ -113,6 +128,15 @@ class VasiliConfig:
             log_data = data['logging']
             config.logging = LoggingConfig(
                 level=log_data.get('level', 'INFO'),
+            )
+
+        if 'auto_selection' in data:
+            auto_data = data['auto_selection']
+            config.auto_selection = AutoSelectionConfig(
+                enabled=auto_data.get('enabled', False),
+                evaluation_interval=auto_data.get('evaluation_interval', 30),
+                min_score_improvement=auto_data.get('min_score_improvement', 10.0),
+                initial_delay=auto_data.get('initial_delay', 10),
             )
 
         return config
