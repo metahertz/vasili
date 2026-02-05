@@ -305,12 +305,13 @@ class TestAutoSelectorEvaluation:
         # Configure mock to have required attributes
         mock_wifi_manager.status = {}
         mock_wifi_manager.suitable_connections = []
+        mock_wifi_manager.get_sorted_connections.return_value = []
 
         selector = AutoSelector(mock_wifi_manager, 30, 10.0, 0)
         # Don't enable
         selector._evaluate_and_switch()
 
-        # Should not attempt any evaluation when no bridge is active
+        # Should not attempt any evaluation when no connections are available
         mock_wifi_manager.use_connection.assert_not_called()
 
 
