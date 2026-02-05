@@ -202,6 +202,6 @@ class TestWifiCard:
         networks1 = card.scan()
         networks2 = card.scan()
 
-        assert len(networks1) == 3
-        assert len(networks2) == 3
+        assert len(networks1) == 4
+        assert len(networks2) == 4
         assert networks1[0].ssid == networks2[0].ssid
