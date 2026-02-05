@@ -1421,9 +1421,7 @@ class AutoSelector:
                 break
 
         if not current_connection:
-            logger.warning(
-                f'Current connection {current_ssid} not found in suitable_connections'
-            )
+            logger.warning(f'Current connection {current_ssid} not found in suitable_connections')
             return
 
         current_score = current_connection.calculate_score()
@@ -1474,9 +1472,7 @@ class AutoSelector:
                 emit_status_update()
                 emit_connections_update()
             else:
-                logger.error(
-                    f'Auto-selector failed to switch to {best_connection.network.ssid}'
-                )
+                logger.error(f'Auto-selector failed to switch to {best_connection.network.ssid}')
         else:
             logger.debug(
                 f'Current connection is optimal (improvement={score_improvement:.2f} < '

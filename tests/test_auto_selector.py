@@ -1,6 +1,5 @@
 """Unit tests for AutoSelector class"""
 
-import time
 from unittest.mock import Mock, patch
 
 from vasili import AutoSelector, ConnectionResult, WifiNetwork
