@@ -1,0 +1,40 @@
+[Unit]
+Description=Vasili WiFi Connection Manager
+Documentation=https://github.com/your-org/vasili
+After=network-online.target mongod.service
+Wants=network-online.target
+Requires=mongod.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/opt/vasili
+ExecStart=/opt/vasili/venv/bin/python3 /opt/vasili/vasili.py
+Restart=on-failure
+RestartSec=10
+TimeoutStartSec=30
+TimeoutStopSec=30
+
+# Security hardening (optional - commented out as vasili needs full network access)
+# PrivateTmp=yes
+# NoNewPrivileges=true
+# ProtectSystem=strict
+# ProtectHome=yes
+# ReadWritePaths=/opt/vasili
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=vasili
+
+# Resource limits (optional - can be uncommented and adjusted as needed)
+# MemoryLimit=512M
+# CPUQuota=50%
+
+# Environment variables (add custom config here if needed)
+# Environment="VASILI_LOG_LEVEL=INFO"
+# Environment="VASILI_LOG_FILE=/var/log/vasili.log"
+
+[Install]
+WantedBy=multi-user.target

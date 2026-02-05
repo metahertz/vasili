@@ -62,7 +62,7 @@ Features that make the tool genuinely useful.
 - [x] **Connection scoring algorithm** - Rank connections by speed, stability, signal strength (PR #21)
 - [ ] **Auto-selection mode** - Automatically use the best available connection
 - [x] **Web UI improvements** - Real-time status updates, connection history, manual override (PR #18)
-- [ ] **Systemd service** - Run as a daemon on boot
+- [x] **Systemd service** - Run as a daemon on boot
 - [x] **Multi-card orchestration** - Dedicated scanning card vs connection cards as described in README (WifiCardManager with scanning_card/connection_cards role separation)
 
 ---

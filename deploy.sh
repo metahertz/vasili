@@ -145,6 +145,7 @@ ssh -p "$REMOTE_PORT" "$REMOTE_USER@$REMOTE_HOST" "$SUDO mkdir -p $REMOTE_DIR/{m
 log_info "Transferring project files..."
 scp -P "$REMOTE_PORT" vasili.py "$REMOTE_USER@$REMOTE_HOST:$REMOTE_DIR/"
 scp -P "$REMOTE_PORT" requirements.txt "$REMOTE_USER@$REMOTE_HOST:$REMOTE_DIR/"
+scp -P "$REMOTE_PORT" vasili.service "$REMOTE_USER@$REMOTE_HOST:$REMOTE_DIR/"
 scp -P "$REMOTE_PORT" modules/*.py "$REMOTE_USER@$REMOTE_HOST:$REMOTE_DIR/modules/" 2>/dev/null || log_warn "No module files found"
 scp -P "$REMOTE_PORT" templates/*.html "$REMOTE_USER@$REMOTE_HOST:$REMOTE_DIR/templates/" 2>/dev/null || log_warn "No template files found"
 
@@ -241,34 +242,17 @@ ssh -p "$REMOTE_PORT" "$REMOTE_USER@$REMOTE_HOST" bash <<ENDSSH
     echo "[INFO] Python dependencies installed successfully"
 ENDSSH
 
-# Create systemd service file
-log_info "Creating systemd service..."
+# Install systemd service file
+log_info "Installing systemd service..."
 ssh -p "$REMOTE_PORT" "$REMOTE_USER@$REMOTE_HOST" bash <<ENDSSH
     SUDO="$SUDO"
     REMOTE_DIR="$REMOTE_DIR"
-    REMOTE_USER="$REMOTE_USER"
 
-    \$SUDO tee /etc/systemd/system/vasili.service > /dev/null <<'EOF'
-[Unit]
-Description=Vasili WiFi Connection Manager
-After=network.target
-
-[Service]
-Type=simple
-User=root
-WorkingDirectory=$REMOTE_DIR
-ExecStart=$REMOTE_DIR/venv/bin/python3 $REMOTE_DIR/vasili.py
-Restart=on-failure
-RestartSec=10
-StandardOutput=journal
-StandardError=journal
-
-[Install]
-WantedBy=multi-user.target
-EOF
+    # Install the service file, substituting the installation directory
+    \$SUDO sed "s|/opt/vasili|\$REMOTE_DIR|g" "\$REMOTE_DIR/vasili.service" | \$SUDO tee /etc/systemd/system/vasili.service > /dev/null
 
     \$SUDO systemctl daemon-reload
-    echo "[INFO] Systemd service created"
+    echo "[INFO] Systemd service installed"
 ENDSSH
 
 # Final instructions
