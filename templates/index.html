@@ -8,72 +8,42 @@
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body {
             font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
-            background: #0d1117;
-            color: #c9d1d9;
-            min-height: 100vh;
-            padding: 16px;
-            font-size: 13px;
+            background: #0d1117; color: #c9d1d9;
+            min-height: 100vh; padding: 16px; font-size: 13px;
         }
         .container { max-width: 960px; margin: 0 auto; }
         h1 { text-align: center; margin-bottom: 20px; color: #58a6ff; font-size: 1.4em; }
         .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px; }
         .grid-full { grid-column: 1 / -1; }
         .panel {
-            background: #161b22;
-            border: 1px solid #30363d;
-            border-radius: 6px;
-            padding: 12px;
+            background: #161b22; border: 1px solid #30363d;
+            border-radius: 6px; padding: 12px;
         }
         .panel h2 {
-            font-size: 0.85em;
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-            color: #8b949e;
-            margin-bottom: 10px;
-            border-bottom: 1px solid #21262d;
-            padding-bottom: 6px;
+            font-size: 0.85em; text-transform: uppercase; letter-spacing: 0.05em;
+            color: #8b949e; margin-bottom: 10px;
+            border-bottom: 1px solid #21262d; padding-bottom: 6px;
         }
         .panel h2 .count { color: #58a6ff; font-weight: normal; }
-
-        /* Status bar */
         .status-bar {
-            display: flex;
-            gap: 20px;
-            flex-wrap: wrap;
-            margin-bottom: 12px;
-            padding: 8px 12px;
-            background: #161b22;
-            border: 1px solid #30363d;
-            border-radius: 6px;
+            display: flex; gap: 20px; flex-wrap: wrap; margin-bottom: 12px;
+            padding: 8px 12px; background: #161b22; border: 1px solid #30363d; border-radius: 6px;
         }
         .status-bar .stat { display: flex; align-items: center; gap: 6px; }
         .status-bar .stat .label { color: #8b949e; }
         .status-bar .stat .val { font-weight: bold; }
         .status-bar .stat .val.on { color: #3fb950; }
         .status-bar .stat .val.off { color: #f85149; }
-
-        /* Card items */
         .card-item {
-            background: #0d1117;
-            border: 1px solid #21262d;
-            border-radius: 4px;
-            padding: 10px;
-            margin-bottom: 6px;
+            background: #0d1117; border: 1px solid #21262d;
+            border-radius: 4px; padding: 10px; margin-bottom: 6px;
         }
         .card-item:last-child { margin-bottom: 0; }
-        .card-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 6px;
-        }
+        .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
         .card-iface { font-weight: bold; color: #58a6ff; }
         .badge {
-            font-size: 0.75em;
-            padding: 2px 6px;
-            border-radius: 3px;
-            font-weight: bold;
-            text-transform: uppercase;
+            font-size: 0.75em; padding: 2px 6px; border-radius: 3px;
+            font-weight: bold; text-transform: uppercase;
         }
         .badge-scanning { background: #1f6feb33; color: #58a6ff; }
         .badge-connection { background: #23863533; color: #3fb950; }
@@ -81,42 +51,24 @@
         .badge-up { background: #23863533; color: #3fb950; }
         .badge-down { background: #f8514933; color: #f85149; }
         .badge-open { background: #3fb95033; color: #3fb950; }
+        .badge-uncloaked { background: #bc8cff22; color: #bc8cff; }
         .badge-wpa2 { background: #d2992233; color: #d29922; }
         .badge-wpa3 { background: #58a6ff33; color: #58a6ff; }
         .card-detail { color: #8b949e; font-size: 0.9em; }
         .card-detail span { margin-right: 12px; }
         .card-detail .val { color: #c9d1d9; }
-
-        /* Connection cards */
         .conn-item {
-            background: #0d1117;
-            border: 1px solid #238636;
-            border-radius: 4px;
-            padding: 10px;
-            margin-bottom: 6px;
+            background: #0d1117; border: 1px solid #238636;
+            border-radius: 4px; padding: 10px; margin-bottom: 6px;
         }
         .conn-item .ssid { font-weight: bold; font-size: 1.05em; }
         .conn-item .method { color: #8b949e; font-size: 0.85em; }
-        .conn-stats {
-            display: flex;
-            gap: 16px;
-            margin-top: 6px;
-            font-size: 0.9em;
-        }
-        .conn-stats .dl { color: #3fb950; }
-        .conn-stats .ul { color: #58a6ff; }
-        .conn-stats .pg { color: #d29922; }
-        .conn-stats .sc { color: #bc8cff; }
-
-        /* Network list */
-        .net-list { max-height: 400px; overflow-y: auto; }
+        .conn-stats { display: flex; gap: 16px; margin-top: 6px; font-size: 0.9em; }
+        .dl { color: #3fb950; } .ul { color: #58a6ff; } .pg { color: #d29922; } .sc { color: #bc8cff; }
+        .net-list, .log-list, .hist-list { max-height: 400px; overflow-y: auto; }
         .net-item {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            padding: 5px 8px;
-            border-bottom: 1px solid #21262d;
-            font-size: 0.9em;
+            display: flex; align-items: center; justify-content: space-between;
+            padding: 5px 8px; border-bottom: 1px solid #21262d; font-size: 0.9em;
         }
         .net-item:last-child { border-bottom: none; }
         .net-ssid { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -128,10 +80,11 @@
         .signal-bar .b:nth-child(2) { height: 7px; }
         .signal-bar .b:nth-child(3) { height: 10px; }
         .signal-bar .b:nth-child(4) { height: 13px; }
-
-        /* Activity log */
-        .log-list { max-height: 350px; overflow-y: auto; font-size: 0.85em; }
-        .log-entry { padding: 4px 0; border-bottom: 1px solid #21262d; display: flex; gap: 8px; }
+        .log-entry {
+            padding: 4px 0; border-bottom: 1px solid #21262d;
+            display: flex; gap: 8px; cursor: pointer;
+        }
+        .log-entry:hover { background: #1c2128; }
         .log-entry:last-child { border-bottom: none; }
         .log-ts { color: #484f58; flex-shrink: 0; width: 65px; }
         .log-icon { flex-shrink: 0; width: 14px; text-align: center; }
@@ -141,105 +94,83 @@
         .log-failed .log-icon { color: #f85149; }
         .log-error .log-icon { color: #d29922; }
         .log-detail { color: #8b949e; }
-
-        /* History */
-        .hist-list { max-height: 300px; overflow-y: auto; }
         .hist-item { padding: 6px 0; border-bottom: 1px solid #21262d; font-size: 0.9em; }
         .hist-item:last-child { border-bottom: none; }
         .hist-header { display: flex; justify-content: space-between; }
-        .hist-ok { color: #3fb950; }
-        .hist-fail { color: #f85149; }
+        .hist-ok { color: #3fb950; } .hist-fail { color: #f85149; }
         .hist-meta { color: #8b949e; font-size: 0.85em; }
-
-        /* Bandwidth */
         .bw-item { display: flex; justify-content: space-between; padding: 4px 0; }
-        .bw-rx { color: #3fb950; }
-        .bw-tx { color: #58a6ff; }
-
+        .bw-rx { color: #3fb950; } .bw-tx { color: #58a6ff; }
         .btn {
-            padding: 6px 14px;
-            border: 1px solid #30363d;
-            border-radius: 4px;
-            cursor: pointer;
-            font-size: 0.85em;
-            font-family: inherit;
-            background: #21262d;
-            color: #c9d1d9;
+            padding: 6px 14px; border: 1px solid #30363d; border-radius: 4px;
+            cursor: pointer; font-size: 0.85em; font-family: inherit;
+            background: #21262d; color: #c9d1d9;
         }
         .btn:hover { background: #30363d; }
         .btn-primary { background: #1f6feb; border-color: #1f6feb; color: #fff; }
         .btn-primary:hover { background: #388bfd; }
         .btn-danger { background: #da3633; border-color: #da3633; color: #fff; }
-        .btn-danger:hover { background: #f85149; }
+        .btn-sm { padding: 3px 8px; font-size: 0.8em; }
         .empty { color: #484f58; text-align: center; padding: 20px; font-style: italic; }
+        @media (max-width: 700px) { .grid { grid-template-columns: 1fr; } }
 
-        .header-row { display: flex; justify-content: space-between; align-items: center; }
-        .header-row h2 { margin-bottom: 0; border: none; padding: 0; }
-        .header-row .actions { display: flex; gap: 6px; }
-
-        @media (max-width: 700px) {
-            .grid { grid-template-columns: 1fr; }
+        /* Detail overlay */
+        .overlay {
+            display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.7); z-index: 100; justify-content: center; align-items: center;
         }
+        .overlay.active { display: flex; }
+        .detail-panel {
+            background: #161b22; border: 1px solid #30363d; border-radius: 8px;
+            padding: 20px; max-width: 700px; width: 90%; max-height: 80vh; overflow-y: auto;
+        }
+        .detail-panel h3 { color: #58a6ff; margin-bottom: 12px; font-size: 1.1em; }
+        .detail-close { float: right; cursor: pointer; color: #8b949e; font-size: 1.2em; }
+        .detail-close:hover { color: #c9d1d9; }
+        .detail-row { display: flex; gap: 12px; padding: 4px 0; border-bottom: 1px solid #21262d; }
+        .detail-row:last-child { border-bottom: none; }
+        .detail-label { color: #8b949e; min-width: 100px; }
+        .detail-val { color: #c9d1d9; }
+        .stage-item {
+            background: #0d1117; border: 1px solid #21262d; border-radius: 4px;
+            padding: 8px 10px; margin-bottom: 6px;
+        }
+        .stage-header { display: flex; justify-content: space-between; align-items: center; }
+        .stage-name { font-weight: bold; }
+        .stage-msg { color: #8b949e; font-size: 0.9em; margin-top: 4px; }
+        .stage-ctx { color: #484f58; font-size: 0.8em; margin-top: 2px; word-break: break-all; }
+
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>VASILI</h1>
-
-        <!-- Status Bar -->
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">
+            <h1 style="margin:0">VASILI</h1>
+            <a href="/config" class="btn" style="text-decoration:none">Settings</a>
+        </div>
         <div class="status-bar" id="status-bar">
             <div class="stat"><span class="label">Scan:</span> <span class="val" id="s-scan">--</span></div>
             <div class="stat"><span class="label">Networks:</span> <span class="val" id="s-nets">0</span></div>
             <div class="stat"><span class="label">Cards:</span> <span class="val" id="s-cards">0</span></div>
             <div class="stat"><span class="label">Modules:</span> <span class="val" id="s-mods">0</span></div>
             <div class="stat"><span class="label">Reconnects:</span> <span class="val" id="s-reconn">0</span></div>
-            <div class="stat"><span class="label">Auto-select:</span> <span class="val" id="s-auto">--</span></div>
-            <div class="stat"><span class="label">MongoDB:</span> <span class="val" id="s-mongo">--</span></div>
+            <div class="stat"><span class="label">Auto:</span> <span class="val" id="s-auto">--</span></div>
+            <div class="stat"><span class="label">DB:</span> <span class="val" id="s-mongo">--</span></div>
         </div>
-
         <div class="grid">
-            <!-- WiFi Cards Panel -->
-            <div class="panel">
-                <h2>WiFi Cards</h2>
-                <div id="cards-list"><div class="empty">Loading...</div></div>
-            </div>
-
-            <!-- Active Connections Panel -->
-            <div class="panel">
-                <h2>Active Connections <span class="count" id="conn-count"></span></h2>
-                <div id="conn-list"><div class="empty">No active connections</div></div>
-            </div>
-
-            <!-- Activity Log -->
-            <div class="panel grid-full">
-                <h2>Activity Log</h2>
-                <div class="log-list" id="activity-log"><div class="empty">Waiting for activity...</div></div>
-            </div>
-
-            <!-- Nearby Networks -->
-            <div class="panel">
-                <h2>Nearby Networks <span class="count" id="scan-count"></span></h2>
-                <div class="net-list" id="network-list"><div class="empty">Scanning...</div></div>
-            </div>
-
-            <!-- Known Networks / History -->
-            <div class="panel">
-                <h2>Connection History</h2>
-                <div class="hist-list" id="history-list"><div class="empty">Loading...</div></div>
-            </div>
-
-            <!-- Bandwidth -->
-            <div class="panel">
-                <h2>Bandwidth (live)</h2>
-                <div id="bandwidth-list"><div class="empty">No data</div></div>
-            </div>
-
-            <!-- Saved Networks -->
-            <div class="panel">
-                <h2>Known Networks <span class="count" id="saved-count"></span></h2>
-                <div id="saved-list"><div class="empty">Loading...</div></div>
-            </div>
+            <div class="panel"><h2>WiFi Cards</h2><div id="cards-list"><div class="empty">Loading...</div></div></div>
+            <div class="panel"><h2>Active Connections <span class="count" id="conn-count"></span></h2><div id="conn-list"><div class="empty">None</div></div></div>
+            <div class="panel grid-full"><h2>Activity Log</h2><div class="log-list" id="activity-log"><div class="empty">Waiting...</div></div></div>
+            <div class="panel"><h2>Nearby Networks <span class="count" id="scan-count"></span></h2><div class="net-list" id="network-list"><div class="empty">Scanning...</div></div></div>
+            <div class="panel"><h2>Connection History</h2><div class="hist-list" id="history-list"><div class="empty">Loading...</div></div></div>
+            <div class="panel"><h2>Bandwidth (live)</h2><div id="bandwidth-list"><div class="empty">No data</div></div></div>
+            <div class="panel"><h2>Known Networks <span class="count" id="saved-count"></span></h2><div id="saved-list"><div class="empty">Loading...</div></div></div>
         </div>
+    </div>
+
+    <!-- Detail Overlay -->
+    <div class="overlay" id="detail-overlay" onclick="if(event.target===this)closeDetail()">
+        <div class="detail-panel" id="detail-content"></div>
     </div>
 
     <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
@@ -247,11 +178,14 @@
         const socket = io();
         let activityEntries = [];
 
-        socket.on('connect', () => console.log('WS connected'));
+        socket.on('connect', () => {});
         socket.on('status_update', updateStatus);
         socket.on('connections_update', d => updateConnections(d.connections));
-        socket.on('scan_update', d => updateNearbyNetworks(d.networks));
+        let lastNets = null;
+        socket.on('scan_update', d => { lastNets = d.networks; updateNearbyNetworks(d.networks); });
         socket.on('activity_update', appendActivity);
+
+        function el(id) { return document.getElementById(id); }
 
         function updateStatus(s) {
             el('s-scan').textContent = s.scanning ? 'Active' : 'Idle';
@@ -268,39 +202,75 @@
 
         function updateCards(cards) {
             const list = el('cards-list');
-            if (!cards || !cards.length) { list.innerHTML = '<div class="empty">No cards detected</div>'; return; }
+            if (!cards || !cards.length) { list.innerHTML = '<div class="empty">No cards</div>'; return; }
             list.innerHTML = cards.map(c => {
-                const roleBadge = c.role === 'scanning'
-                    ? '<span class="badge badge-scanning">SCAN</span>'
-                    : '<span class="badge badge-connection">CONN</span>';
-                const stateBadge = c.in_use
-                    ? '<span class="badge badge-up">IN USE</span>'
+                // Role badge: SCAN for scanning card, MON when in monitor mode, CONN otherwise
+                let role;
+                if (c.role === 'scanning') {
+                    role = '<span class="badge badge-scanning">SCAN</span>';
+                } else if (c.mode === 'monitor') {
+                    role = '<span class="badge" style="background:#d2992233;color:#d29922">MON</span>';
+                } else {
+                    role = '<span class="badge badge-connection">CONN</span>';
+                }
+
+                // State: BUSY when card is leased (in_use), IDLE when available
+                const state = c.in_use
+                    ? '<span class="badge badge-up">BUSY</span>'
                     : '<span class="badge badge-idle">IDLE</span>';
-                const upBadge = c.is_up
+
+                // Link state: UP when interface is operational, DOWN otherwise
+                const up = c.is_up
                     ? '<span class="badge badge-up">UP</span>'
                     : '<span class="badge badge-down">DOWN</span>';
 
-                let details = `<span>IP: <span class="val">${c.ip_address || 'none'}</span></span>`;
-                if (c.gateway) details += `<span>GW: <span class="val">${c.gateway}</span></span>`;
-                if (c.routing_table) details += `<span>Table: <span class="val">${c.routing_table}</span></span>`;
+                // Supported bands
+                const bands = (c.supported_bands||[]).map(b =>
+                    `<span class="badge" style="background:#30363d;color:${b===c.current_band?'#3fb950':'#8b949e'};font-size:0.7em">${b}</span>`
+                ).join(' ');
 
-                let netInfo = '';
+                // Current frequency
+                let freqInfo = '';
+                if (c.current_band) {
+                    freqInfo = `<span style="color:#bc8cff">${c.current_band} Ch${c.current_channel}</span>`;
+                }
+
+                // Network/IP details
+                let details = `<span>IP: <span class="val">${c.ip_address||'none'}</span></span>`;
+                if (c.gateway) details += `<span>GW: <span class="val">${c.gateway}</span></span>`;
+                if (c.routing_table) details += `<span>Tbl: <span class="val">${c.routing_table}</span></span>`;
+
+                // Connected network
+                let net = '';
                 if (c.connected_network) {
                     const n = c.connected_network;
-                    netInfo = `<div class="card-detail" style="margin-top:4px">
-                        Connected: <span class="val">${n.ssid || '(hidden)'}</span>
-                        <span class="badge badge-${(n.encryption_type||'open').toLowerCase()}">${n.encryption_type||'Open'}</span>
-                        Signal: <span class="val">${n.signal_strength}%</span>
+                    net = `<div class="card-detail" style="margin-top:4px;color:#3fb950">
+                        Connected: <span class="val">${n.ssid||'(hidden)'}</span> ${n.encryption_type||'Open'} ${n.signal_strength}%
+                    </div>`;
+                }
+
+                // Current task (what the card is working on right now)
+                let task = '';
+                if (c.current_task) {
+                    const elapsed = ((Date.now()/1000) - c.current_task.started_at).toFixed(0);
+                    task = `<div class="card-detail" style="margin-top:4px;color:#d29922">
+                        Working: <span class="val">${c.current_task.ssid||'(hidden)'}</span>
+                        via <span class="val">${c.current_task.module}</span>
+                        <span style="color:#484f58">${elapsed}s</span>
                     </div>`;
                 }
 
                 return `<div class="card-item">
                     <div class="card-header">
                         <span class="card-iface">${c.interface}</span>
-                        <span>${roleBadge} ${stateBadge} ${upBadge}</span>
+                        <span>${role} ${state} ${up}</span>
+                    </div>
+                    <div class="card-detail" style="display:flex;justify-content:space-between">
+                        <span>${bands}</span>
+                        ${freqInfo}
                     </div>
                     <div class="card-detail">${details}</div>
-                    ${netInfo}
+                    ${net}${task}
                 </div>`;
             }).join('');
         }
@@ -308,54 +278,85 @@
         function updateConnections(conns) {
             const list = el('conn-list');
             el('conn-count').textContent = conns && conns.length ? `(${conns.length})` : '';
-            if (!conns || !conns.length) {
-                list.innerHTML = '<div class="empty">No active connections</div>';
-                return;
-            }
+            if (!conns || !conns.length) { list.innerHTML = '<div class="empty">None</div>'; return; }
             list.innerHTML = conns.map((c, i) => {
                 const n = c.network;
                 return `<div class="conn-item">
                     <div style="display:flex;justify-content:space-between;align-items:center">
-                        <div>
-                            <span class="ssid">${n.ssid || '(Hidden)'}</span>
-                            <span class="method">${c.connection_method} via ${c.interface}</span>
-                        </div>
-                        <button class="btn btn-primary" onclick="useConnection(${i})">Bridge</button>
+                        <div><span class="ssid">${n.ssid||'(Hidden)'}</span>${n.uncloaked?' <span class="badge badge-uncloaked">UNCLOAKED</span>':''} <span class="method">${c.connection_method} via ${c.interface}</span></div>
+                        <button class="btn btn-primary btn-sm" onclick="useConnection(${i})">Bridge</button>
                     </div>
                     <div class="conn-stats">
-                        <span class="dl">${c.download_speed.toFixed(1)} Mbps down</span>
-                        <span class="ul">${c.upload_speed.toFixed(1)} Mbps up</span>
-                        <span class="pg">${c.ping.toFixed(0)} ms</span>
-                        <span class="sc">Score: ${(c.download_speed*0.4*100/100 + n.signal_strength*0.3 + c.upload_speed*0.2*100/50 + Math.max(0,100-c.ping/2)*0.1).toFixed(0)}</span>
-                    </div>
-                    <div class="card-detail" style="margin-top:4px">
-                        Signal: ${n.signal_strength}%
-                        <span class="badge badge-${(n.encryption_type||'open').toLowerCase()}">${n.encryption_type||'Open'}</span>
-                        Ch ${n.channel}
-                    </div>
-                </div>`;
+                        <span class="dl">${c.download_speed.toFixed(1)} down</span>
+                        <span class="ul">${c.upload_speed.toFixed(1)} up</span>
+                        <span class="pg">${c.ping.toFixed(0)}ms</span>
+                    </div></div>`;
             }).join('');
         }
+
+        let consentGatedStages = [];  // [{name, mode}] — loaded from API
 
         function updateNearbyNetworks(nets) {
             const list = el('network-list');
             el('scan-count').textContent = nets ? `(${nets.length})` : '';
             if (!nets || !nets.length) { list.innerHTML = '<div class="empty">Scanning...</div>'; return; }
+
+            const bySSIDStages = consentGatedStages.filter(s => s.mode === 'by_ssid');
+
             list.innerHTML = nets.map(n => {
-                const bars = [0,25,50,75].map(t =>
-                    `<span class="b ${n.signal_strength > t ? 'a' : ''}"></span>`
-                ).join('');
+                const bars = [0,25,50,75].map(t => `<span class="b ${n.signal_strength>t?'a':''}"></span>`).join('');
                 const enc = n.encryption_type || 'Open';
-                const cls = n.is_open ? 'open' : enc.toLowerCase();
-                return `<div class="net-item">
-                    <span class="net-ssid">${n.ssid || '<i>hidden</i>'}</span>
-                    <span class="net-meta">
-                        <span class="signal-bar">${bars}</span> ${n.signal_strength}%
-                        <span class="badge badge-${cls}">${enc}</span>
-                        Ch${n.channel}
-                    </span>
-                </div>`;
+                const nuc = n.uncloaked ? ' <span class="badge badge-uncloaked">UNCLOAKED</span>' : '';
+
+                // Per-SSID approve buttons for by_ssid consent stages
+                let approveHtml = '';
+                if (bySSIDStages.length && n.bssid) {
+                    const btns = bySSIDStages.map(s => {
+                        const isApproved = (s.approved_ssids || []).some(
+                            a => a.bssid === n.bssid.toLowerCase()
+                        );
+                        if (isApproved) {
+                            return `<span class="badge" style="background:#23863533;color:#3fb950;cursor:pointer;font-size:0.65em"
+                                onclick="approveNet('${s.name}','${n.bssid}','${(n.ssid||'').replace(/'/g,"\\'")}',false)"
+                                title="Click to revoke">${s.name}</span>`;
+                        } else {
+                            return `<span class="badge" style="background:#30363d;color:#8b949e;cursor:pointer;font-size:0.65em"
+                                onclick="approveNet('${s.name}','${n.bssid}','${(n.ssid||'').replace(/'/g,"\\'")}',true)"
+                                title="Click to approve">${s.name}</span>`;
+                        }
+                    }).join(' ');
+                    approveHtml = `<span style="margin-left:4px">${btns}</span>`;
+                }
+
+                return `<div class="net-item"><span class="net-ssid">${n.ssid||'<i>hidden</i>'}${nuc}${approveHtml}</span>
+                    <span class="net-meta"><span class="signal-bar">${bars}</span> ${n.signal_strength}%
+                    <span class="badge badge-${n.is_open?'open':enc.toLowerCase()}">${enc}</span> Ch${n.channel}</span></div>`;
             }).join('');
+        }
+
+        function approveNet(stageName, bssid, ssid, approved) {
+            fetch('/api/modules/' + stageName + '/consent/ssid', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({bssid, ssid, approved}),
+            }).then(r => r.json()).then(d => {
+                if (d.success) loadConsentStages();
+            });
+        }
+
+        function loadConsentStages() {
+            fetch('/api/modules/consent').then(r => r.json()).then(data => {
+                consentGatedStages = [];
+                Object.entries(data).forEach(([name, info]) => {
+                    consentGatedStages.push({
+                        name,
+                        mode: info.mode || 'off',
+                        approved_ssids: info.approved_ssids || [],
+                    });
+                });
+                // Re-render networks with updated approval state
+                if (lastNets) updateNearbyNetworks(lastNets);
+            });
         }
 
         function appendActivity(entry) {
@@ -366,58 +367,106 @@
 
         function renderActivity() {
             const list = el('activity-log');
-            if (!activityEntries.length) { list.innerHTML = '<div class="empty">Waiting for activity...</div>'; return; }
-            // Show newest first
+            if (!activityEntries.length) { list.innerHTML = '<div class="empty">Waiting...</div>'; return; }
             const entries = [...activityEntries].reverse();
             list.innerHTML = entries.map(e => {
                 const t = new Date(e.timestamp * 1000);
-                const ts = t.toLocaleTimeString('en-GB', {hour:'2-digit',minute:'2-digit',second:'2-digit'});
-                let icon = '?', cls = '', msg = '';
+                const ts = t.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+                let icon='?', cls='', msg='';
+                const aid = e.id || '';
+                const click = aid ? `onclick="showDetail('${aid}')"` : '';
 
+                const uc = e.uncloaked ? ' <span class="badge badge-uncloaked">UNCLOAKED</span>' : '';
+                const mac = e.mac ? ` <span style="color:#484f58">${e.mac}</span>` : '';
                 if (e.type === 'attempt') {
-                    icon = '>'; cls = 'log-attempt';
-                    msg = `<b>${e.module}</b> trying <b>${e.ssid || '(hidden)'}</b>`;
-                    msg += ` <span class="log-detail">${e.encryption || 'Open'} ${e.signal}%</span>`;
+                    icon='>'; cls='log-attempt';
+                    msg=`<b>${e.module}</b> -> <b>${e.ssid||'(hidden)'}</b>${uc} <span class="log-detail">${e.encryption||'Open'} ${e.signal}%</span>`;
                 } else if (e.type === 'connected') {
-                    icon = '+'; cls = 'log-connected';
-                    msg = `<b>${e.ssid}</b> via <b>${e.module}</b> on ${e.interface}`;
-                    msg += ` <span class="log-detail">score:${e.score} dl:${e.download} ul:${e.upload} ping:${e.ping}ms</span>`;
+                    icon='+'; cls='log-connected';
+                    msg=`<b>${e.ssid}</b>${uc} via <b>${e.module}</b> on ${e.interface}${mac} <span class="log-detail">score:${e.score} dl:${e.download} ul:${e.upload} ${e.ping}ms</span>`;
                 } else if (e.type === 'failed') {
-                    icon = 'x'; cls = 'log-failed';
-                    msg = `<b>${e.module}</b> failed on <b>${e.ssid || '(hidden)'}</b>`;
-                    if (e.reason) msg += ` <span class="log-detail">${e.reason}</span>`;
+                    icon='x'; cls='log-failed';
+                    msg=`<b>${e.module}</b> x <b>${e.ssid||'(hidden)'}</b>${uc}${mac} <span class="log-detail">${e.reason||''}</span>`;
                 } else if (e.type === 'error') {
-                    icon = '!'; cls = 'log-error';
-                    msg = `<b>${e.module}</b> error on <b>${e.ssid || '(hidden)'}</b>`;
-                    if (e.reason) msg += ` <span class="log-detail">${e.reason}</span>`;
+                    icon='!'; cls='log-error';
+                    msg=`<b>${e.module}</b> ! <b>${e.ssid||'(hidden)'}</b>${uc} <span class="log-detail">${e.reason||''}</span>`;
                 }
-                return `<div class="log-entry ${cls}">
-                    <span class="log-ts">${ts}</span>
-                    <span class="log-icon">${icon}</span>
-                    <span class="log-msg">${msg}</span>
-                </div>`;
+                return `<div class="log-entry ${cls}" ${click}><span class="log-ts">${ts}</span><span class="log-icon">${icon}</span><span class="log-msg">${msg}</span></div>`;
             }).join('');
         }
 
+        function showDetail(attemptId) {
+            fetch('/api/activity/' + attemptId)
+                .then(r => r.json())
+                .then(d => {
+                    if (d.error) return;
+                    const panel = el('detail-content');
+                    const started = d.started_at ? new Date(d.started_at*1000).toLocaleString('en-GB') : '?';
+                    const dur = d.finished_at && d.started_at ? ((d.finished_at - d.started_at).toFixed(1) + 's') : 'in progress';
+
+                    let statusBadge = '';
+                    if (d.status === 'connected') statusBadge = '<span class="badge badge-up">CONNECTED</span>';
+                    else if (d.status === 'failed') statusBadge = '<span class="badge badge-down">FAILED</span>';
+                    else if (d.status === 'error') statusBadge = '<span class="badge" style="background:#d2992233;color:#d29922">ERROR</span>';
+                    else statusBadge = '<span class="badge badge-scanning">IN PROGRESS</span>';
+
+                    let html = `<span class="detail-close" onclick="closeDetail()">[x]</span>`;
+                    const duc = d.uncloaked ? ' <span class="badge badge-uncloaked">UNCLOAKED</span>' : '';
+                    html += `<h3>${d.ssid || '(hidden)'}${duc} ${statusBadge}</h3>`;
+                    html += `<div class="detail-row"><span class="detail-label">Attempt ID</span><span class="detail-val" style="font-size:0.8em;color:#484f58">${d.id}</span></div>`;
+                    html += `<div class="detail-row"><span class="detail-label">Module</span><span class="detail-val">${d.module}</span></div>`;
+                    html += `<div class="detail-row"><span class="detail-label">BSSID</span><span class="detail-val">${d.bssid}</span></div>`;
+                    html += `<div class="detail-row"><span class="detail-label">Encryption</span><span class="detail-val">${d.encryption||'Open'}</span></div>`;
+                    html += `<div class="detail-row"><span class="detail-label">Signal</span><span class="detail-val">${d.signal}%</span></div>`;
+                    if (d.mac) html += `<div class="detail-row"><span class="detail-label">MAC Used</span><span class="detail-val" style="font-family:monospace">${d.mac}</span></div>`;
+                    html += `<div class="detail-row"><span class="detail-label">Started</span><span class="detail-val">${started}</span></div>`;
+                    html += `<div class="detail-row"><span class="detail-label">Duration</span><span class="detail-val">${dur}</span></div>`;
+
+                    if (d.result) {
+                        html += `<h3 style="margin-top:12px">Result</h3>`;
+                        Object.entries(d.result).forEach(([k,v]) => {
+                            html += `<div class="detail-row"><span class="detail-label">${k}</span><span class="detail-val">${typeof v === 'number' ? v.toFixed?.(1) ?? v : v}</span></div>`;
+                        });
+                    }
+
+                    if (d.stages && d.stages.length) {
+                        html += `<h3 style="margin-top:12px">Pipeline Stages (${d.stages.length})</h3>`;
+                        d.stages.forEach(s => {
+                            let sBadge = '';
+                            if (s.status === 'internet') sBadge = '<span class="badge badge-up">INTERNET</span>';
+                            else if (s.status === 'success') sBadge = '<span class="badge badge-connection">OK</span>';
+                            else if (s.status === 'failed') sBadge = '<span class="badge badge-down">FAIL</span>';
+                            else if (s.status === 'stopped') sBadge = '<span class="badge" style="background:#f8514933;color:#f85149">STOPPED</span>';
+                            else if (s.status === 'skipped') sBadge = '<span class="badge badge-idle">SKIP</span>';
+                            else if (s.status === 'error') sBadge = '<span class="badge" style="background:#d2992233;color:#d29922">ERR</span>';
+
+                            let durStr = s.duration ? s.duration + 's' : '';
+                            html += `<div class="stage-item">
+                                <div class="stage-header"><span class="stage-name">${s.stage}</span><span>${sBadge} ${durStr}</span></div>
+                                ${s.message ? '<div class="stage-msg">'+s.message+'</div>' : ''}
+                                ${s.reason ? '<div class="stage-msg" style="color:#f85149">'+s.reason+'</div>' : ''}
+                                ${s.context ? '<div class="stage-ctx">'+JSON.stringify(s.context)+'</div>' : ''}
+                            </div>`;
+                        });
+                    }
+
+                    panel.innerHTML = html;
+                    el('detail-overlay').classList.add('active');
+                });
+        }
+
+        function closeDetail() { el('detail-overlay').classList.remove('active'); }
+
         function updateHistory(data) {
             const list = el('history-list');
-            if (!data || !data.length) { list.innerHTML = '<div class="empty">No history yet</div>'; return; }
+            if (!data || !data.length) { list.innerHTML = '<div class="empty">No history</div>'; return; }
             list.innerHTML = data.map(h => {
-                const ts = new Date(h.timestamp).toLocaleString('en-GB', {
-                    month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'
-                });
+                const ts = new Date(h.timestamp).toLocaleString('en-GB',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'});
                 const ok = h.success;
                 let speed = '';
-                if (ok && h.download_speed) {
-                    speed = `<span class="dl">${h.download_speed.toFixed(1)}</span>/<span class="ul">${h.upload_speed.toFixed(1)}</span> Mbps <span class="pg">${h.ping.toFixed(0)}ms</span>`;
-                }
-                return `<div class="hist-item">
-                    <div class="hist-header">
-                        <span>${h.ssid || '(hidden)'} <span class="badge badge-${(h.encryption_type||'open').toLowerCase()}">${h.encryption_type||'Open'}</span></span>
-                        <span class="${ok ? 'hist-ok' : 'hist-fail'}">${ok ? 'OK' : 'FAIL'}</span>
-                    </div>
-                    <div class="hist-meta">${ts} ${h.interface ? '| '+h.interface : ''} ${speed ? '| '+speed : ''}</div>
-                </div>`;
+                if (ok && h.download_speed) speed = `<span class="dl">${h.download_speed.toFixed(1)}</span>/<span class="ul">${h.upload_speed.toFixed(1)}</span> <span class="pg">${h.ping.toFixed(0)}ms</span>`;
+                const huc = h.uncloaked ? ' <span class="badge badge-uncloaked">UNCLOAKED</span>' : '';
+                return `<div class="hist-item"><div class="hist-header"><span>${h.ssid||'(hidden)'}${huc} <span class="badge badge-${(h.encryption_type||'open').toLowerCase()}">${h.encryption_type||'Open'}</span></span><span class="${ok?'hist-ok':'hist-fail'}">${ok?'OK':'FAIL'}</span></div><div class="hist-meta">${ts} ${h.interface?'| '+h.interface:''} ${speed?'| '+speed:''}</div></div>`;
             }).join('');
         }
 
@@ -425,82 +474,46 @@
             const list = el('bandwidth-list');
             const entries = Object.entries(data);
             if (!entries.length) { list.innerHTML = '<div class="empty">No data</div>'; return; }
-            list.innerHTML = entries.map(([iface, bw]) => {
-                const rx = formatBytes(bw.rx_rate);
-                const tx = formatBytes(bw.tx_rate);
-                const totalRx = formatBytes(bw.rx_bytes);
-                const totalTx = formatBytes(bw.tx_bytes);
-                return `<div class="bw-item">
-                    <span class="card-iface">${iface}</span>
-                    <span><span class="bw-rx">${rx}/s rx</span> | <span class="bw-tx">${tx}/s tx</span></span>
-                </div>
-                <div class="bw-item" style="color:#8b949e;font-size:0.85em;padding-left:8px">
-                    Total: ${totalRx} rx / ${totalTx} tx
-                </div>`;
-            }).join('');
+            list.innerHTML = entries.map(([iface, bw]) =>
+                `<div class="bw-item"><span class="card-iface">${iface}</span><span><span class="bw-rx">${fmtB(bw.rx_rate)}/s</span> | <span class="bw-tx">${fmtB(bw.tx_rate)}/s</span></span></div>`
+            ).join('');
         }
 
         function updateSavedNetworks(data) {
             const list = el('saved-list');
             el('saved-count').textContent = data && data.length ? `(${data.length})` : '';
-            if (!data || !data.length) { list.innerHTML = '<div class="empty">No saved networks</div>'; return; }
+            if (!data || !data.length) { list.innerHTML = '<div class="empty">None</div>'; return; }
             list.innerHTML = data.map(n => {
-                const total = (n.success_count||0) + (n.fail_count||0);
-                const rate = total > 0 ? Math.round(n.success_count / total * 100) : 0;
+                const total = (n.success_count||0)+(n.fail_count||0);
+                const rate = total>0 ? Math.round(n.success_count/total*100) : 0;
                 return `<div class="net-item" style="flex-direction:column;align-items:flex-start;padding:6px 8px">
-                    <div style="display:flex;justify-content:space-between;width:100%">
-                        <span>${n.ssid} <span class="badge badge-${(n.encryption_type||'open').toLowerCase()}">${n.encryption_type||'Open'}</span></span>
-                        <span style="color:${rate>70?'#3fb950':'#d29922'}">${rate}% (${n.success_count}/${total})</span>
-                    </div>
-                    <div class="hist-meta">
-                        Score: ${(n.avg_score||0).toFixed(0)} |
-                        <span class="dl">${(n.avg_download||0).toFixed(1)}</span>/<span class="ul">${(n.avg_upload||0).toFixed(1)}</span> Mbps |
-                        <span class="pg">${(n.avg_ping||0).toFixed(0)}ms</span>
-                        ${n.last_connected ? '| Last: '+new Date(n.last_connected).toLocaleDateString('en-GB') : ''}
-                    </div>
-                </div>`;
+                    <div style="display:flex;justify-content:space-between;width:100%"><span>${n.ssid} <span class="badge badge-${(n.encryption_type||'open').toLowerCase()}">${n.encryption_type||'Open'}</span></span><span style="color:${rate>70?'#3fb950':'#d29922'}">${rate}% (${n.success_count}/${total})</span></div>
+                    <div class="hist-meta">Score:${(n.avg_score||0).toFixed(0)} | <span class="dl">${(n.avg_download||0).toFixed(1)}</span>/<span class="ul">${(n.avg_upload||0).toFixed(1)}</span> | <span class="pg">${(n.avg_ping||0).toFixed(0)}ms</span></div></div>`;
             }).join('');
         }
 
-        function formatBytes(bytes) {
-            if (bytes < 1024) return bytes.toFixed(0) + ' B';
-            if (bytes < 1048576) return (bytes/1024).toFixed(1) + ' KB';
-            if (bytes < 1073741824) return (bytes/1048576).toFixed(1) + ' MB';
-            return (bytes/1073741824).toFixed(2) + ' GB';
-        }
-
         function useConnection(index) {
-            fetch('/api/use_connection/' + index, {method: 'POST'})
-                .then(r => r.json())
-                .then(d => { if (!d.success) alert('Failed to connect'); });
+            fetch('/api/use_connection/'+index, {method:'POST'}).then(r=>r.json()).then(d=>{if(!d.success)alert('Failed')});
         }
 
-        function el(id) { return document.getElementById(id); }
+        function fmtB(b) {
+            if(b<1024)return b.toFixed(0)+' B';
+            if(b<1048576)return(b/1024).toFixed(1)+' KB';
+            if(b<1073741824)return(b/1048576).toFixed(1)+' MB';
+            return(b/1073741824).toFixed(2)+' GB';
+        }
 
-        // Polling for data not pushed via WebSocket
         function poll() {
             fetch('/api/cards').then(r=>r.json()).then(updateCards).catch(()=>{});
             fetch('/api/bandwidth/current').then(r=>r.json()).then(updateBandwidth).catch(()=>{});
         }
-
         function loadOnce() {
-            fetch('/api/history').then(r=>r.json()).then(d => {
-                if (d.available && d.history) updateHistory(d.history);
-            }).catch(()=>{});
+            fetch('/api/history').then(r=>r.json()).then(d=>{if(d.available&&d.history)updateHistory(d.history)}).catch(()=>{});
             fetch('/api/saved_networks').then(r=>r.json()).then(updateSavedNetworks).catch(()=>{});
-            fetch('/api/activity').then(r=>r.json()).then(data => {
-                activityEntries = data || [];
-                renderActivity();
-            }).catch(()=>{});
+            fetch('/api/activity').then(r=>r.json()).then(d=>{activityEntries=d||[];renderActivity()}).catch(()=>{});
+            loadConsentStages();
         }
-
-        window.addEventListener('load', () => {
-            loadOnce();
-            poll();
-            setInterval(poll, 5000);
-            // Refresh history/saved less frequently
-            setInterval(loadOnce, 30000);
-        });
+        window.addEventListener('load', () => { loadOnce(); poll(); setInterval(poll,5000); setInterval(loadOnce,30000); });
     </script>
 </body>
 </html>

@@ -282,106 +282,209 @@ class CaptivePortalDetector:
 
 
 class CaptivePortalAuthenticator:
-    """Attempts automatic authentication through captive portals."""
+    """Authenticate through captive portals using intelligent form parsing.
 
-    def __init__(self):
+    Handles marketing portals, terms acceptance, click-through, and
+    multi-step flows using:
+    - HTML form parsing (stdlib html.parser)
+    - Heuristic field classification (email, name, terms, etc.)
+    - Auto-fill with configurable identity data
+    - Session/cookie persistence across requests
+    - CSRF token extraction from hidden fields
+    """
+
+    USER_AGENT = 'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/125.0 Mobile Safari/537.36'
+
+    def __init__(self, identity: dict = None):
         self.timeout = 15
+        self.max_steps = 5
+        self.identity = identity or {}
+        self.auth_log: list[dict] = []  # Detailed log for UI
 
-    def authenticate(self, portal_info: Dict[str, Any]) -> bool:
-        """
-        Attempt to authenticate through the captive portal.
+    def authenticate(self, portal_info: Dict[str, Any],
+                     interface: str = None) -> bool:
+        """Attempt to authenticate through the captive portal.
+
+        Tries multiple strategies in order:
+        1. Smart form parsing + auto-fill (handles marketing portals)
+        2. Simple click-through (handles redirect-only portals)
 
         Args:
             portal_info: Portal information from detection
+            interface: WiFi interface to bind requests to
 
         Returns:
-            True if authentication succeeded, False otherwise
+            True if authentication succeeded
         """
         auth_method = portal_info.get('auth_method')
         portal_type = portal_info.get('portal_type')
+        self.auth_log = []
 
-        logger.info(f'Attempting authentication: type={portal_type}, method={auth_method}')
+        logger.info(f'Attempting auth: type={portal_type}, method={auth_method}')
 
-        # Try authentication based on method
-        if auth_method == 'terms_acceptance':
-            return self._accept_terms(portal_info)
-        elif auth_method == 'click_through':
-            return self._click_through(portal_info)
-        elif auth_method == 'login_required':
-            logger.warning('Login required - automatic auth not possible without credentials')
+        if auth_method == 'payment_required':
+            self._log('skip', 'Payment required — cannot auto-authenticate')
             return False
-        elif auth_method == 'payment_required':
-            logger.warning('Payment required - automatic auth not possible')
-            return False
-        else:
-            # Try generic click-through as fallback
-            logger.info('Unknown auth method, trying generic click-through')
-            return self._click_through(portal_info)
 
-    def _accept_terms(self, portal_info: Dict[str, Any]) -> bool:
-        """Attempt to accept terms and conditions automatically."""
+        redirect_url = portal_info.get('redirect_url')
+        if not redirect_url:
+            self._log('skip', 'No redirect URL in portal info')
+            return False
+
+        # Strategy 1: Smart form parsing (handles most portal types)
+        result = self._smart_form_auth(redirect_url, interface)
+        if result:
+            return True
+
+        # Strategy 2: Simple click-through fallback
+        result = self._click_through(redirect_url, interface)
+        if result:
+            return True
+
+        self._log('failed', 'All authentication strategies exhausted')
+        return False
+
+    def _smart_form_auth(self, url: str, interface: str = None) -> bool:
+        """Parse and submit portal forms with intelligent auto-fill."""
+        from portal_forms import parse_and_fill
+
+        session = requests.Session()
+        session.headers.update({
+            'User-Agent': self.USER_AGENT,
+            'Accept': 'text/html,application/xhtml+xml,*/*',
+            'Accept-Language': 'en-US,en;q=0.9',
+        })
+
+        # Bind session to WiFi interface if specified
+        if interface:
+            try:
+                import network_isolation
+                source_ip = network_isolation.get_interface_ip(interface)
+                if source_ip:
+                    from requests.adapters import HTTPAdapter
+                    adapter = _SourceAddressAdapter(source_ip)
+                    session.mount('http://', adapter)
+                    session.mount('https://', adapter)
+            except Exception as e:
+                logger.debug(f'Could not bind session to {interface}: {e}')
+
         try:
-            redirect_url = portal_info.get('redirect_url')
-            if not redirect_url:
-                return False
+            current_url = url
+            for step in range(self.max_steps):
+                self._log('step', f'Step {step+1}: GET {current_url}')
 
-            # First, GET the portal page
-            response = requests.get(redirect_url, timeout=self.timeout)
-
-            # Look for form submission or acceptance button
-            # This is a simplified version - real implementation would need more sophisticated parsing
-            form_match = re.search(
-                r'<form[^>]+action=["\']([^"\']+)["\']', response.text, re.IGNORECASE
-            )
-
-            if form_match:
-                action_url = form_match.group(1)
-                if not action_url.startswith('http'):
-                    base_url = f'{urlparse(redirect_url).scheme}://{urlparse(redirect_url).netloc}'
-                    action_url = base_url + action_url
-
-                # Try POSTing acceptance
-                logger.debug(f'Attempting to POST acceptance to {action_url}')
-                post_response = requests.post(
-                    action_url,
-                    data={'accept': '1', 'terms': 'accepted', 'continue': '1'},
-                    timeout=self.timeout,
-                    allow_redirects=True,
+                response = session.get(
+                    current_url, timeout=self.timeout, allow_redirects=True
                 )
 
-                # Check if we're now online
-                if post_response.status_code == 200:
-                    logger.info('Terms acceptance POST succeeded')
+                if response.status_code != 200:
+                    self._log('error', f'HTTP {response.status_code} from {current_url}')
+                    return False
+
+                # Parse forms from the page
+                base_url = f'{urlparse(response.url).scheme}://{urlparse(response.url).netloc}'
+                form_fills = parse_and_fill(response.text, base_url, self.identity)
+
+                if not form_fills:
+                    self._log('info', f'No forms found on page (step {step+1})')
+                    # No forms — might be a success page already
+                    if step > 0:
+                        return True  # We submitted a form and landed on a no-form page
+                    return False
+
+                # Try each form (best candidate first)
+                submitted = False
+                for form, filled_data in form_fills:
+                    if not form.action and not current_url:
+                        continue
+
+                    action_url = form.action or current_url
+                    method = form.method
+
+                    field_summary = ', '.join(
+                        f'{k}={"***" if len(v) > 0 else "(empty)"}'
+                        for k, v in filled_data.items()
+                        if k != '__submit__'
+                    )
+                    self._log(
+                        'submit',
+                        f'{method} {action_url} [{len(filled_data)} fields: {field_summary}]'
+                    )
+
+                    if method == 'GET':
+                        response = session.get(
+                            action_url, params=filled_data,
+                            timeout=self.timeout, allow_redirects=True,
+                        )
+                    else:
+                        response = session.post(
+                            action_url, data=filled_data,
+                            timeout=self.timeout, allow_redirects=True,
+                            headers={'Referer': current_url},
+                        )
+
+                    submitted = True
+                    current_url = response.url
+
+                    # Check if response has more forms (multi-step)
+                    if '<form' in response.text.lower():
+                        self._log('info', f'Response contains form — continuing to step {step+2}')
+                        break  # Continue outer loop with new page
+
+                    # No more forms — assume we're done
+                    self._log('success', f'Form submitted, no more forms on response page')
                     return True
 
+                if not submitted:
+                    break
+
+        except requests.exceptions.Timeout:
+            self._log('error', 'Request timed out')
         except Exception as e:
-            logger.error(f'Error accepting terms: {e}')
+            self._log('error', f'Smart form auth error: {str(e)[:200]}')
 
         return False
 
-    def _click_through(self, portal_info: Dict[str, Any]) -> bool:
-        """Attempt simple click-through authentication."""
+    def _click_through(self, url: str, interface: str = None) -> bool:
+        """Simple click-through: just visit the URL with redirects."""
         try:
-            redirect_url = portal_info.get('redirect_url')
-            if not redirect_url:
-                return False
-
-            # Some portals just need you to visit the page
-            response = requests.get(
-                redirect_url,
-                timeout=self.timeout,
-                allow_redirects=True,
-                headers={'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) Vasili/1.0'},
-            )
-
+            self._log('step', f'Click-through: GET {url}')
+            kwargs = {
+                'timeout': self.timeout,
+                'allow_redirects': True,
+                'headers': {'User-Agent': self.USER_AGENT},
+            }
+            response = requests.get(url, **kwargs)
             if response.status_code == 200:
-                logger.info('Click-through succeeded')
+                self._log('success', 'Click-through returned 200')
                 return True
-
         except Exception as e:
-            logger.error(f'Error in click-through: {e}')
-
+            self._log('error', f'Click-through error: {e}')
         return False
+
+    def _log(self, level: str, message: str):
+        """Add to auth log for detailed UI output."""
+        self.auth_log.append({
+            'level': level,
+            'message': message,
+            'timestamp': time.time(),
+        })
+        if level == 'error':
+            logger.warning(f'Portal auth: {message}')
+        else:
+            logger.info(f'Portal auth: {message}')
+
+
+class _SourceAddressAdapter(requests.adapters.HTTPAdapter):
+    """HTTPAdapter that binds to a specific source IP."""
+
+    def __init__(self, source_address, **kwargs):
+        self._source_address = source_address
+        super().__init__(**kwargs)
+
+    def init_poolmanager(self, *args, **kwargs):
+        kwargs['source_address'] = (self._source_address, 0)
+        super().init_poolmanager(*args, **kwargs)
 
 
 class CaptivePortalModule(ConnectionModule):

@@ -176,3 +176,15 @@ def mock_network_isolation():
         mock_ni.get_interface_ip.return_value = '192.168.1.100'
         mock_ni.get_interface_gateway.return_value = '192.168.1.1'
         yield mock_ni
+
+
+@pytest.fixture(autouse=True)
+def mock_mac_manager():
+    """Mock MacManager so tests don't change real MAC addresses."""
+    mock_mm = MagicMock()
+    mock_mm.get_mac_for_network.return_value = '02:aa:bb:cc:dd:ee'
+    mock_mm.get_current_mac.return_value = '00:11:22:33:44:55'
+    mock_mm.set_mac.return_value = True
+
+    with patch('vasili.MacManager', return_value=mock_mm):
+        yield mock_mm

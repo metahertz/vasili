@@ -1,0 +1,422 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Vasili - Settings</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+            background: #0d1117; color: #c9d1d9;
+            min-height: 100vh; padding: 16px; font-size: 13px;
+        }
+        .container { max-width: 800px; margin: 0 auto; }
+        .nav {
+            display: flex; justify-content: space-between; align-items: center;
+            margin-bottom: 24px;
+        }
+        .nav h1 { color: #58a6ff; font-size: 1.4em; }
+        .nav a {
+            text-decoration: none; color: #c9d1d9; padding: 6px 14px;
+            border: 1px solid #30363d; border-radius: 4px; background: #21262d;
+            font-family: inherit; font-size: 0.85em;
+        }
+        .nav a:hover { background: #30363d; }
+        .section {
+            background: #161b22; border: 1px solid #30363d;
+            border-radius: 6px; padding: 16px; margin-bottom: 16px;
+        }
+        .section h2 {
+            font-size: 0.95em; text-transform: uppercase; letter-spacing: 0.05em;
+            color: #8b949e; margin-bottom: 14px;
+            border-bottom: 1px solid #21262d; padding-bottom: 8px;
+        }
+        .badge {
+            font-size: 0.75em; padding: 2px 6px; border-radius: 3px;
+            font-weight: bold; text-transform: uppercase;
+        }
+        .badge-scanning { background: #1f6feb33; color: #58a6ff; }
+        .badge-connection { background: #23863533; color: #3fb950; }
+        .badge-down { background: #f8514933; color: #f85149; }
+        .badge-idle { background: #30363d; color: #8b949e; }
+        .badge-up { background: #23863533; color: #3fb950; }
+
+        /* Module card */
+        .mod-card {
+            background: #0d1117; border: 1px solid #21262d;
+            border-radius: 6px; padding: 14px; margin-bottom: 12px;
+        }
+        .mod-card:last-child { margin-bottom: 0; }
+        .mod-header {
+            display: flex; justify-content: space-between; align-items: center;
+            margin-bottom: 10px;
+        }
+        .mod-name { font-weight: bold; color: #58a6ff; font-size: 1.05em; }
+        .mod-meta { display: flex; gap: 8px; align-items: center; }
+        .mod-desc { color: #8b949e; font-size: 0.9em; margin-bottom: 10px; }
+
+        /* Enable toggle */
+        .toggle-row {
+            display: flex; align-items: center; gap: 10px;
+            padding: 8px 0; border-bottom: 1px solid #21262d;
+        }
+        .toggle-row:last-child { border-bottom: none; }
+        .toggle-label { flex: 1; }
+        .toggle-label .name { color: #c9d1d9; }
+        .toggle-label .desc { color: #8b949e; font-size: 0.85em; }
+        .switch {
+            position: relative; width: 40px; height: 22px; flex-shrink: 0;
+        }
+        .switch input { opacity: 0; width: 0; height: 0; }
+        .switch .slider {
+            position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0;
+            background: #30363d; border-radius: 22px; transition: 0.3s;
+        }
+        .switch .slider:before {
+            position: absolute; content: ""; height: 16px; width: 16px;
+            left: 3px; bottom: 3px; background: #8b949e;
+            border-radius: 50%; transition: 0.3s;
+        }
+        .switch input:checked + .slider { background: #238636; }
+        .switch input:checked + .slider:before { transform: translateX(18px); background: #fff; }
+
+        /* Stages */
+        .stages-list { margin: 10px 0; }
+        .stage-row {
+            display: flex; align-items: center; gap: 8px;
+            padding: 6px 10px; background: #161b22; border: 1px solid #21262d;
+            border-radius: 4px; margin-bottom: 4px; font-size: 0.9em;
+        }
+        .stage-row:last-child { margin-bottom: 0; }
+        .stage-num { color: #484f58; width: 20px; text-align: center; }
+        .stage-name { font-weight: bold; flex: 1; }
+        .stage-consent { color: #d29922; font-size: 0.85em; }
+
+        /* Config fields */
+        .config-section {
+            margin-top: 12px; padding-top: 10px;
+            border-top: 1px solid #21262d;
+        }
+        .config-section h4 {
+            color: #8b949e; font-size: 0.85em; text-transform: uppercase;
+            letter-spacing: 0.05em; margin-bottom: 8px;
+        }
+        .cfg-field {
+            display: flex; align-items: flex-start; gap: 12px;
+            padding: 6px 0; border-bottom: 1px solid #161b22;
+        }
+        .cfg-field:last-child { border-bottom: none; }
+        .cfg-key {
+            min-width: 160px; color: #c9d1d9; font-weight: bold;
+            padding-top: 4px;
+        }
+        .cfg-input-wrap { flex: 1; }
+        .cfg-input-wrap input, .cfg-input-wrap textarea {
+            width: 100%; background: #0d1117; border: 1px solid #30363d;
+            border-radius: 4px; color: #c9d1d9; padding: 5px 8px;
+            font-family: inherit; font-size: 0.9em;
+        }
+        .cfg-input-wrap textarea { min-height: 60px; resize: vertical; }
+        .cfg-input-wrap input:focus, .cfg-input-wrap textarea:focus {
+            outline: none; border-color: #58a6ff;
+        }
+        .cfg-desc { color: #484f58; font-size: 0.8em; margin-top: 2px; }
+        .cfg-default { color: #484f58; font-size: 0.8em; }
+
+        /* Consent section */
+        .consent-section {
+            margin-top: 12px; padding: 12px;
+            background: #1c1208; border: 1px solid #d2992244;
+            border-radius: 6px;
+        }
+        .consent-section h4 {
+            color: #d29922; font-size: 0.9em; margin-bottom: 8px;
+        }
+        .consent-item {
+            display: flex; align-items: center; gap: 10px;
+            padding: 6px 0;
+        }
+        .consent-item .name { color: #c9d1d9; font-weight: bold; }
+        .consent-item .warn { color: #8b949e; font-size: 0.85em; }
+
+        .save-indicator {
+            color: #3fb950; font-size: 0.85em; opacity: 0;
+            transition: opacity 0.3s;
+        }
+        .save-indicator.show { opacity: 1; }
+
+        .toast {
+            position: fixed; bottom: 20px; right: 20px;
+            background: #238636; color: #fff; padding: 10px 16px;
+            border-radius: 6px; font-size: 0.9em; z-index: 200;
+            opacity: 0; transition: opacity 0.3s;
+        }
+        .toast.show { opacity: 1; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="nav">
+            <h1>VASILI Settings</h1>
+            <a href="/">Dashboard</a>
+        </div>
+
+        <div class="section">
+            <h2>Loaded Modules</h2>
+            <div id="modules-list"><div style="color:#484f58;text-align:center;padding:20px">Loading...</div></div>
+        </div>
+
+        <div class="section" id="consent-section" style="display:none">
+            <h2>Consent Gates</h2>
+            <p style="color:#8b949e;font-size:0.9em;margin-bottom:12px">
+                Offensive/sensitive stages require explicit consent before they will run.
+                Granting consent means you authorize vasili to perform these actions on networks you connect to.
+            </p>
+            <div id="consent-list"></div>
+        </div>
+
+        <div class="section">
+            <h2>Data Management</h2>
+            <div style="display:flex;flex-direction:column;gap:12px">
+                <div style="display:flex;justify-content:space-between;align-items:center;padding:10px;background:#0d1117;border:1px solid #21262d;border-radius:4px">
+                    <div>
+                        <div style="color:#c9d1d9;font-weight:bold">Known Networks</div>
+                        <div style="color:#8b949e;font-size:0.85em">Clear all saved network credentials and performance history</div>
+                    </div>
+                    <button class="btn" style="background:#da3633;border-color:#da3633;color:#fff" onclick="clearData('saved_networks','known networks')">Clear All</button>
+                </div>
+                <div style="display:flex;justify-content:space-between;align-items:center;padding:10px;background:#0d1117;border:1px solid #21262d;border-radius:4px">
+                    <div>
+                        <div style="color:#c9d1d9;font-weight:bold">MAC Assignments</div>
+                        <div style="color:#8b949e;font-size:0.85em">Clear stored per-network MAC addresses. New random MACs will be generated on next connection.</div>
+                    </div>
+                    <button class="btn" style="background:#da3633;border-color:#da3633;color:#fff" onclick="clearData('mac_assignments','MAC assignments')">Clear All</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="toast" id="toast"></div>
+
+    <script>
+        let modulesData = [];
+        let consentData = {};
+
+        function el(id) { return document.getElementById(id); }
+
+        function toast(msg) {
+            const t = el('toast');
+            t.textContent = msg;
+            t.classList.add('show');
+            setTimeout(() => t.classList.remove('show'), 2000);
+        }
+
+        function loadModules() {
+            Promise.all([
+                fetch('/api/modules').then(r => r.json()),
+                fetch('/api/modules/consent').then(r => r.json()),
+            ]).then(([modules, consent]) => {
+                modulesData = modules;
+                consentData = consent;
+                renderModules();
+                renderConsent();
+            });
+        }
+
+        function renderModules() {
+            const list = el('modules-list');
+            list.innerHTML = modulesData.map((m, mi) => {
+                // Stages
+                let stagesHtml = '';
+                if (m.stages && m.stages.length) {
+                    stagesHtml = '<div class="stages-list">' + m.stages.map((s, si) => {
+                        const consentBadge = s.requires_consent
+                            ? '<span class="stage-consent">requires consent</span>'
+                            : '';
+                        return `<div class="stage-row">
+                            <span class="stage-num">${si+1}</span>
+                            <span class="stage-name">${s.name}</span>
+                            ${consentBadge}
+                        </div>`;
+                    }).join('') + '</div>';
+                }
+
+                // Config fields — merge module + stage schemas
+                let allSchemas = {...(m.config_schema || {})};
+                (m.stages || []).forEach(s => {
+                    Object.entries(s.config_schema || {}).forEach(([k, v]) => {
+                        allSchemas[s.name + '.' + k] = {...v, _stage: s.name};
+                    });
+                });
+
+                let configHtml = '';
+                const vals = m.config_values || {};
+                const schemaEntries = Object.entries(allSchemas);
+                if (schemaEntries.length) {
+                    configHtml = '<div class="config-section"><h4>Configuration</h4>';
+                    schemaEntries.forEach(([key, spec]) => {
+                        const val = vals[key] !== undefined ? vals[key] : spec.default;
+                        const displayVal = typeof val === 'object' ? JSON.stringify(val, null, 2) : val;
+                        const isComplex = typeof val === 'object';
+                        const inputId = `cfg-${m.name}-${key}`.replace(/\./g, '-');
+
+                        configHtml += `<div class="cfg-field">
+                            <span class="cfg-key">${key}</span>
+                            <div class="cfg-input-wrap">
+                                ${isComplex
+                                    ? `<textarea id="${inputId}" onchange="saveConfig('${m.name}','${key}',this.value,true)">${displayVal}</textarea>`
+                                    : `<input id="${inputId}" type="${spec.type==='int'?'number':spec.type==='bool'?'checkbox':'text'}"
+                                        ${spec.type==='bool' ? (val?'checked':'') : `value="${displayVal}"`}
+                                        onchange="saveConfig('${m.name}','${key}',${spec.type==='bool'?'this.checked':'this.value'},${spec.type==='int'?'false':'false'})">`}
+                                <div class="cfg-desc">${spec.description || ''}</div>
+                                <div class="cfg-default">Default: ${typeof spec.default === 'object' ? JSON.stringify(spec.default) : spec.default}</div>
+                            </div>
+                        </div>`;
+                    });
+                    configHtml += '</div>';
+                }
+
+                return `<div class="mod-card">
+                    <div class="mod-header">
+                        <span class="mod-name">${m.name}</span>
+                        <div class="mod-meta">
+                            <span class="badge badge-scanning">Priority ${m.priority}</span>
+                            <span class="badge badge-${m.stages&&m.stages.length?'connection':'idle'}">
+                                ${m.stages&&m.stages.length ? 'Pipeline' : 'Direct'}
+                            </span>
+                        </div>
+                    </div>
+                    <div class="mod-desc">${m.class} &mdash; ${m.stages&&m.stages.length ? m.stages.length+' stages' : 'single-step module'}</div>
+                    ${stagesHtml}
+                    ${configHtml}
+                </div>`;
+            }).join('');
+        }
+
+        function renderConsent() {
+            const consentStages = [];
+            modulesData.forEach(m => {
+                (m.stages || []).forEach(s => {
+                    if (s.requires_consent) {
+                        const info = consentData[s.name] || {};
+                        consentStages.push({
+                            stage: s.name,
+                            module: m.name,
+                            mode: info.mode || 'off',
+                            approved_ssids: info.approved_ssids || [],
+                        });
+                    }
+                });
+                if (m.requires_consent) {
+                    const info = consentData[m.name] || {};
+                    consentStages.push({
+                        stage: m.name,
+                        module: m.name,
+                        mode: info.mode || 'off',
+                        approved_ssids: info.approved_ssids || [],
+                    });
+                }
+            });
+
+            const section = el('consent-section');
+            const list = el('consent-list');
+
+            if (!consentStages.length) {
+                section.style.display = 'none';
+                return;
+            }
+
+            section.style.display = '';
+            list.innerHTML = consentStages.map(c => {
+                const offSel = c.mode === 'off' ? 'selected' : '';
+                const onSel = c.mode === 'on' ? 'selected' : '';
+                const bySel = c.mode === 'by_ssid' ? 'selected' : '';
+
+                let ssidList = '';
+                if (c.mode === 'by_ssid') {
+                    const items = c.approved_ssids.map(s =>
+                        `<div style="display:flex;justify-content:space-between;align-items:center;padding:3px 0">
+                            <span>${s.ssid || s.bssid}</span>
+                            <button class="btn" style="padding:2px 6px;font-size:0.75em;background:#da3633;border-color:#da3633;color:#fff"
+                                onclick="revokeSSID('${c.stage}','${s.bssid}')">Remove</button>
+                        </div>`
+                    ).join('');
+                    ssidList = `<div style="margin-top:6px;padding-left:8px;border-left:2px solid #d2992244">
+                        <div style="color:#8b949e;font-size:0.8em;margin-bottom:4px">
+                            Approved networks (add from Dashboard nearby list):
+                        </div>
+                        ${items || '<div style="color:#484f58;font-size:0.85em">No networks approved yet</div>'}
+                    </div>`;
+                }
+
+                return `<div class="consent-item" style="flex-direction:column;align-items:stretch;gap:6px">
+                    <div style="display:flex;align-items:center;gap:10px">
+                        <select onchange="setConsentMode('${c.stage}',this.value)"
+                                style="background:#0d1117;border:1px solid #30363d;color:#c9d1d9;border-radius:4px;padding:4px 8px;font-family:inherit">
+                            <option value="off" ${offSel}>Off</option>
+                            <option value="on" ${onSel}>On (all networks)</option>
+                            <option value="by_ssid" ${bySel}>By network</option>
+                        </select>
+                        <div>
+                            <span class="name">${c.stage}</span>
+                            <span class="warn">(from ${c.module})</span>
+                        </div>
+                    </div>
+                    ${ssidList}
+                </div>`;
+            }).join('');
+        }
+
+        function saveConfig(modName, key, value, isJson) {
+            let parsed = value;
+            if (isJson) {
+                try { parsed = JSON.parse(value); } catch(e) { toast('Invalid JSON'); return; }
+            } else {
+                const num = Number(value);
+                if (!isNaN(num) && value !== '' && value !== true && value !== false) parsed = num;
+            }
+            const body = {};
+            body[key] = parsed;
+            fetch('/api/modules/' + modName + '/config', {
+                method: 'PUT',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(body),
+            }).then(r => r.json()).then(d => {
+                toast(d.success ? 'Saved' : 'Save failed');
+            });
+        }
+
+        function setConsentMode(stageName, mode) {
+            fetch('/api/modules/' + stageName + '/consent', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({mode}),
+            }).then(r => r.json()).then(d => {
+                toast(d.success ? `${stageName}: ${mode}` : 'Failed');
+                loadModules();  // Refresh to show/hide SSID list
+            });
+        }
+
+        function revokeSSID(stageName, bssid) {
+            fetch('/api/modules/' + stageName + '/consent/ssid', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({bssid, approved: false}),
+            }).then(r => r.json()).then(d => {
+                toast(d.success ? 'Network removed' : 'Failed');
+                loadModules();
+            });
+        }
+
+        function clearData(endpoint, label) {
+            if (!confirm('Clear all ' + label + '? This cannot be undone.')) return;
+            fetch('/api/' + endpoint, {method: 'DELETE'})
+                .then(r => r.json())
+                .then(d => toast(d.status === 'cleared' ? label + ' cleared (' + d.count + ')' : 'Failed'));
+        }
+
+        window.addEventListener('load', loadModules);
+    </script>
+</body>
+</html>

@@ -10,6 +10,7 @@ WiFi interface's gateway.
 """
 
 import subprocess
+import threading
 from subprocess import TimeoutExpired
 from typing import Optional
 
@@ -23,15 +24,17 @@ logger = get_logger('network_isolation')
 _TABLE_BASE = 100
 _table_map: dict[str, int] = {}
 _next_table = _TABLE_BASE
+_table_lock = threading.Lock()
 
 
 def _get_table_for_interface(interface: str) -> int:
-    """Get or assign a routing table number for an interface."""
+    """Get or assign a routing table number for an interface (thread-safe)."""
     global _next_table
-    if interface not in _table_map:
-        _table_map[interface] = _next_table
-        _next_table += 1
-    return _table_map[interface]
+    with _table_lock:
+        if interface not in _table_map:
+            _table_map[interface] = _next_table
+            _next_table += 1
+        return _table_map[interface]
 
 
 def get_interface_ip(interface: str) -> Optional[str]:

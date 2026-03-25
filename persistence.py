@@ -173,6 +173,19 @@ class ConnectionStore:
             logger.error(f'Failed to delete network: {e}')
             return False
 
+    def clear_all(self) -> int:
+        """Delete all saved networks. Returns count of deleted entries."""
+        if not self._available:
+            return 0
+
+        try:
+            result = self.collection.delete_many({})
+            logger.info(f'Cleared {result.deleted_count} saved networks')
+            return result.deleted_count
+        except Exception as e:
+            logger.error(f'Failed to clear networks: {e}')
+            return 0
+
     def get_best_networks(self, limit: int = 10) -> list[dict]:
         """Get top performing networks by average score."""
         if not self._available:

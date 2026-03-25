@@ -3,6 +3,7 @@
 # Modules are loaded dynamically from the modules directory
 
 import collections
+import concurrent.futures
 import importlib
 import inspect
 import os
@@ -10,7 +11,8 @@ import queue
 import subprocess
 import threading
 import time
-from dataclasses import dataclass
+import uuid
+from dataclasses import dataclass, field
 from typing import Optional
 
 try:
@@ -31,6 +33,9 @@ from logging_config import setup_logging, get_logger
 from persistence import ConnectionStore
 from notifications import NotificationManager, NotificationEvent
 from bandwidth import BandwidthMonitor
+from module_config import ModuleConfigStore
+from consent import ConsentManager
+from mac_manager import MacManager
 import network_isolation
 
 # Configure logging with structured output, configurable levels, and file support
@@ -175,6 +180,7 @@ class WifiNetwork:
     channel: int
     encryption_type: str
     is_open: bool
+    uncloaked: bool = False  # True if SSID was resolved from a hidden network
 
 
 @dataclass
@@ -216,6 +222,16 @@ class ConnectionResult:
         )
 
         return round(total_score, 2)
+
+
+@dataclass
+class StageResult:
+    """Result from a pipeline stage execution."""
+    success: bool
+    has_internet: bool  # True = full internet works, pipeline can stop
+    context_updates: dict  # Data to pass to subsequent stages
+    message: str = ''
+    stop_pipeline: bool = False  # True = abort pipeline (e.g. no WiFi association)
 
 
 class PerformanceMetricsStore:
@@ -813,13 +829,17 @@ class NetworkBridge:
 
 
 class WifiCard:
-    def __init__(self, interface_name: str):
+    def __init__(self, interface_name: str, mac_manager: MacManager = None):
         """Initialize a wifi card with the given interface name"""
         self.interface = interface_name
         self.in_use = False
         self._connected_network: Optional[WifiNetwork] = None
         self._connection_password: Optional[str] = None
         self._routing_info: Optional[dict] = None
+        self._mac_manager: Optional[MacManager] = mac_manager
+        self._original_mac: Optional[str] = None
+        self.current_task: Optional[dict] = None
+        self.current_mode: str = 'managed'  # managed, monitor, etc.
 
         # Verify the interface exists and is a wireless device
         if not os.path.isdir(f'/sys/class/net/{interface_name}/wireless'):
@@ -928,6 +948,10 @@ class WifiCard:
         """
         attempt = 0
         last_error = None
+
+        # Apply per-network MAC before connecting (privacy + session consistency)
+        if self._mac_manager and network.bssid:
+            self._apply_network_mac(network.bssid)
 
         while attempt < max_retries:
             attempt += 1
@@ -1102,13 +1126,110 @@ class WifiCard:
         }
 
     def _is_interface_up(self) -> bool:
-        """Check if the interface is currently up"""
+        """Check if the interface is currently up.
+
+        In monitor mode, operstate may report 'unknown' even when active,
+        so we also check the IFF_UP flag via sysfs.
+        """
         try:
             with open(f'/sys/class/net/{self.interface}/operstate', 'r') as f:
                 state = f.read().strip()
-                return state == 'up'
+            if state == 'up':
+                return True
+            # In monitor mode, operstate is often 'unknown' — check flags
+            if self.current_mode == 'monitor':
+                with open(f'/sys/class/net/{self.interface}/flags', 'r') as f:
+                    flags = int(f.read().strip(), 16)
+                    return bool(flags & 0x1)  # IFF_UP
+            return False
         except Exception:
             return False
+
+    def get_mode(self) -> Optional[str]:
+        """Get current interface mode (managed, monitor, etc.)."""
+        try:
+            result = subprocess.run(
+                ['iw', 'dev', self.interface, 'info'],
+                capture_output=True, text=True, timeout=5,
+            )
+            import re as _re
+            match = _re.search(r'type\s+(\w+)', result.stdout)
+            if match:
+                return match.group(1)
+        except Exception:
+            pass
+        return None
+
+    def set_mode(self, mode: str) -> bool:
+        """Set interface mode (managed, monitor, etc.).
+
+        Brings the interface down, changes mode, brings it back up.
+        The card must be leased before calling this.
+        """
+        try:
+            subprocess.run(
+                ['ip', 'link', 'set', self.interface, 'down'],
+                check=True, capture_output=True, timeout=5,
+            )
+            subprocess.run(
+                ['iw', 'dev', self.interface, 'set', 'type', mode],
+                check=True, capture_output=True, timeout=5,
+            )
+            subprocess.run(
+                ['ip', 'link', 'set', self.interface, 'up'],
+                check=True, capture_output=True, timeout=5,
+            )
+            self.current_mode = mode
+            logger.info(f'Set {self.interface} mode to {mode}')
+            return True
+        except subprocess.CalledProcessError as e:
+            logger.error(f'Failed to set {self.interface} to {mode}: {e}')
+            return False
+
+    def ensure_managed(self) -> bool:
+        """Ensure the card is in managed mode (for nmcli operations)."""
+        if self.current_mode != 'managed':
+            return self.set_mode('managed')
+        return True
+
+    def run_scan(self, ssids: list[str] = None, passive: bool = False) -> str:
+        """Run a direct iw scan on this card.
+
+        Unlike nmcli scans (which use the scanning card), this runs a scan
+        directly on THIS card. Useful for directed probes and hidden network
+        discovery.
+
+        Args:
+            ssids: Optional list of SSIDs to probe for (directed scan)
+            passive: If True, only listen (no probe requests)
+
+        Returns:
+            Raw scan output text
+        """
+        try:
+            # Ensure interface is up
+            subprocess.run(
+                ['ip', 'link', 'set', self.interface, 'up'],
+                capture_output=True, timeout=5,
+            )
+
+            cmd = ['iw', 'dev', self.interface, 'scan']
+            if passive:
+                cmd.append('passive')
+            elif ssids:
+                for ssid in ssids:
+                    cmd.extend(['ssid', ssid])
+
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=30,
+            )
+            return result.stdout
+        except subprocess.TimeoutExpired:
+            logger.warning(f'Scan timed out on {self.interface}')
+            return ''
+        except Exception as e:
+            logger.error(f'Scan failed on {self.interface}: {e}')
+            return ''
 
     def get_ip_address(self) -> Optional[str]:
         """Get the IPv4 address assigned to this interface."""
@@ -1117,6 +1238,76 @@ class WifiCard:
     def get_gateway(self) -> Optional[str]:
         """Get the default gateway for this interface."""
         return network_isolation.get_interface_gateway(self.interface)
+
+    def get_frequency_info(self) -> dict:
+        """Get current frequency and supported bands from iw.
+
+        Returns dict with:
+            current_freq: int MHz or None
+            current_band: '2.4GHz' / '5GHz' / '6GHz' / None
+            current_channel: int or None
+            supported_bands: list of '2.4GHz' / '5GHz' / '6GHz'
+        """
+        info = {
+            'current_freq': None,
+            'current_band': None,
+            'current_channel': None,
+            'supported_bands': [],
+        }
+
+        try:
+            # Get current channel/freq
+            result = subprocess.run(
+                ['iw', 'dev', self.interface, 'info'],
+                capture_output=True, text=True, timeout=5,
+            )
+            import re as _re
+            ch_match = _re.search(
+                r'channel\s+(\d+)\s+\((\d+)\s+MHz\)', result.stdout
+            )
+            if ch_match:
+                info['current_channel'] = int(ch_match.group(1))
+                freq = int(ch_match.group(2))
+                info['current_freq'] = freq
+                info['current_band'] = self._freq_to_band(freq)
+
+            # Get phy name
+            phy_match = _re.search(r'wiphy\s+(\d+)', result.stdout)
+            if phy_match:
+                phy = f'phy{phy_match.group(1)}'
+                # Get supported bands
+                phy_result = subprocess.run(
+                    ['iw', 'phy', phy, 'info'],
+                    capture_output=True, text=True, timeout=5,
+                )
+                bands = set()
+                for line in phy_result.stdout.split('\n'):
+                    line = line.strip()
+                    if line.startswith('Band '):
+                        band_num = line.split()[1].rstrip(':')
+                        if band_num == '1':
+                            bands.add('2.4GHz')
+                        elif band_num == '2':
+                            bands.add('5GHz')
+                        elif band_num == '4':
+                            bands.add('6GHz')
+                info['supported_bands'] = sorted(bands)
+
+        except Exception as e:
+            logger.debug(f'Failed to get frequency info for {self.interface}: {e}')
+
+        return info
+
+    @staticmethod
+    def _freq_to_band(freq_mhz: int) -> str:
+        """Convert frequency in MHz to band name."""
+        if 2400 <= freq_mhz <= 2500:
+            return '2.4GHz'
+        elif 5000 <= freq_mhz <= 5900:
+            return '5GHz'
+        elif 5925 <= freq_mhz <= 7125:
+            return '6GHz'
+        return f'{freq_mhz}MHz'
 
     def _setup_isolation(self) -> Optional[dict]:
         """Set up routing isolation after a successful WiFi connection.
@@ -1141,6 +1332,31 @@ class WifiCard:
 
         return network_isolation.setup_interface_routing(self.interface)
 
+    def _apply_network_mac(self, bssid: str):
+        """Apply a per-network randomized MAC before connecting.
+
+        The same MAC is reused for the same BSSID across sessions,
+        providing privacy while maintaining session continuity.
+        """
+        try:
+            # Save original MAC on first use
+            if not self._original_mac:
+                self._original_mac = MacManager.get_current_mac(self.interface)
+
+            target_mac = self._mac_manager.get_mac_for_network(bssid)
+            current_mac = MacManager.get_current_mac(self.interface)
+
+            if current_mac and current_mac.lower() == target_mac.lower():
+                return  # Already set
+
+            logger.info(
+                f'Setting MAC for {self.interface}: {current_mac} -> {target_mac} '
+                f'(network {bssid})'
+            )
+            MacManager.set_mac(self.interface, target_mac)
+        except Exception as e:
+            logger.warning(f'MAC randomization failed on {self.interface}: {e}')
+
 
 class WifiCardManager:
     def __init__(self):
@@ -1149,12 +1365,19 @@ class WifiCardManager:
         self.initialization_errors: list[str] = []
         self._scanning_card: Optional[WifiCard] = None
 
-        # Initialize MongoDB-backed lease store
+        # Initialize MongoDB-backed stores
         config = get_config()
         self.lease_store = CardLeaseStore(
             mongo_uri=config.database.mongodb_uri,
             db_name=config.database.db_name,
         )
+        self.mac_manager = MacManager(
+            mongo_uri=config.database.mongodb_uri,
+            db_name=config.database.db_name,
+        )
+        # Thread-local storage for pending task info — each worker thread
+        # sets its own pending task before calling module.connect()
+        self._pending_tasks = threading.local()
         # Clear stale leases from previous run (e.g. after reboot)
         self.lease_store.clear_all()
 
@@ -1207,7 +1430,7 @@ class WifiCardManager:
             # Initialize cards
             for interface in wifi_interfaces:
                 try:
-                    card = WifiCard(interface)
+                    card = WifiCard(interface, mac_manager=self.mac_manager)
                     self.cards.append(card)
                     logger.info(f'Initialized WiFi card: {interface}')
                 except ValueError as e:
@@ -1284,6 +1507,7 @@ class WifiCardManager:
                             card.interface, holder, role='connection'
                         ):
                             card.in_use = True
+                            card.current_task = getattr(self._pending_tasks, 'task', None)
                             return card
                 return None
 
@@ -1302,7 +1526,10 @@ class WifiCardManager:
                         card.interface, routing_info
                     )
                     card._routing_info = None
+                # Ensure card is back in managed mode for next user
+                card.ensure_managed()
                 card.in_use = False
+                card.current_task = None
                 self.lease_store.release(card.interface, holder)
 
     def get_all_cards(self) -> list[WifiCard]:
@@ -1784,8 +2011,20 @@ class AutoSelector:
 
 class ConnectionModule:
     # Base class for connection modules
-    def __init__(self, card_manager):
+    priority = 50  # Lower = runs first in scan loop
+
+    def __init__(self, card_manager, module_config=None, **kwargs):
         self.card_manager = card_manager
+        self._module_config = module_config
+
+    def get_module_config(self) -> dict:
+        """Get this module's current config values from the config store."""
+        if self._module_config:
+            name = getattr(self, 'name', self.__class__.__name__)
+            return self._module_config.get_config(name)
+        # Fall back to schema defaults
+        schema = self.get_config_schema()
+        return {k: v.get('default') for k, v in schema.items()}
 
     def can_connect(self, network: WifiNetwork) -> bool:
         raise NotImplementedError()
@@ -1826,15 +2065,233 @@ class ConnectionModule:
         return download, upload, ping
 
 
+class PipelineStage:
+    """A stage within a pipeline that runs against an already-connected card.
+
+    Stages communicate via a shared context dict. Each stage can read
+    context set by previous stages and add its own findings.
+    """
+    name: str = 'unnamed'
+    requires_consent: bool = False
+
+    def can_run(self, network: WifiNetwork, card, context: dict) -> bool:
+        """Check if this stage should run given current context."""
+        raise NotImplementedError()
+
+    def run(self, network: WifiNetwork, card, context: dict) -> StageResult:
+        """Execute this stage. Card is already connected to the network."""
+        raise NotImplementedError()
+
+    def get_config_schema(self) -> dict:
+        """Return config schema for this stage.
+
+        Returns dict of {key: {type, default, description}}.
+        """
+        return {}
+
+
+class PipelineModule(ConnectionModule):
+    """Orchestrates a pipeline of stages for a network type.
+
+    The pipeline connects to a network once, then runs stages sequentially.
+    Each stage can check/modify the context dict. If a stage achieves
+    internet connectivity (has_internet=True), the pipeline runs a speedtest
+    and returns success. If all stages exhaust without internet, the card
+    is disconnected and failure is returned.
+    """
+    priority = 10  # Pipelines run before simple modules
+
+    # If True, pipeline connects to the network before running stages.
+    # Set to False for encrypted networks where stages handle credentials.
+    auto_connect = True
+
+    def __init__(self, card_manager, stages: list[PipelineStage] = None,
+                 consent_manager=None, module_config=None, **kwargs):
+        super().__init__(card_manager, module_config=module_config)
+        self.stages = stages or []
+        self.consent_manager = consent_manager
+        self.last_stage_log: list[dict] = []  # Stage results from last connect()
+
+    def _has_consent(self, stage_name: str, network: WifiNetwork = None) -> bool:
+        if self.consent_manager:
+            bssid = network.bssid if network else None
+            ssid = network.ssid if network else None
+            return self.consent_manager.has_consent(stage_name, bssid=bssid, ssid=ssid)
+        return False
+
+    def _get_connect_context(self) -> dict:
+        """Return initial context for a connect() call.
+
+        Override in subclasses to inject data like password lists.
+        """
+        return {}
+
+    def connect(self, network: WifiNetwork) -> ConnectionResult:
+        card = self.card_manager.get_card()
+        if not card:
+            logger.error('No wifi cards available for pipeline')
+            return ConnectionResult(
+                network=network, download_speed=0, upload_speed=0,
+                ping=0, connected=False, connection_method='pipeline',
+                interface='',
+            )
+
+        # For open networks, connect before running stages.
+        # For encrypted networks, stages handle credentials and connection.
+        if self.auto_connect:
+            if not card.connect(network):
+                self.card_manager.return_card(card)
+                return ConnectionResult(
+                    network=network, download_speed=0, upload_speed=0,
+                    ping=0, connected=False, connection_method='pipeline',
+                    interface=card.interface,
+                )
+
+        # Run stages sequentially
+        context: dict = self._get_connect_context()
+        if self.auto_connect:
+            context['wifi_associated'] = True
+        successful_stage = None
+        self.last_stage_log = []
+
+        for stage in self.stages:
+            if stage.requires_consent and not self._has_consent(stage.name, network):
+                self.last_stage_log.append({
+                    'stage': stage.name,
+                    'status': 'skipped',
+                    'reason': 'no_consent',
+                    'timestamp': time.time(),
+                })
+                continue
+
+            try:
+                if not stage.can_run(network, card, context):
+                    self.last_stage_log.append({
+                        'stage': stage.name,
+                        'status': 'skipped',
+                        'reason': 'can_run=False',
+                        'timestamp': time.time(),
+                    })
+                    continue
+
+                logger.info(f'Pipeline stage: {stage.name} on {network.ssid}')
+                t0 = time.time()
+                result = stage.run(network, card, context)
+                elapsed = round(time.time() - t0, 2)
+                context.update(result.context_updates)
+
+                stage_entry = {
+                    'stage': stage.name,
+                    'status': (
+                        'internet' if result.has_internet else
+                        'stopped' if result.stop_pipeline else
+                        'success' if result.success else 'failed'
+                    ),
+                    'message': result.message,
+                    'duration': elapsed,
+                    'context': dict(result.context_updates),
+                    'timestamp': time.time(),
+                }
+                self.last_stage_log.append(stage_entry)
+
+                if result.stop_pipeline:
+                    logger.info(
+                        f'Stage {stage.name} stopped pipeline: {result.message}'
+                    )
+                    break
+
+                if result.has_internet:
+                    logger.info(
+                        f'Stage {stage.name} achieved internet on {network.ssid}'
+                    )
+                    successful_stage = stage.name
+                    break
+
+            except Exception as e:
+                logger.error(f'Stage {stage.name} error: {e}')
+                self.last_stage_log.append({
+                    'stage': stage.name,
+                    'status': 'error',
+                    'message': str(e)[:200],
+                    'timestamp': time.time(),
+                })
+                continue
+
+        if successful_stage:
+            try:
+                dl, ul, ping = self.run_speedtest(card)
+                return ConnectionResult(
+                    network=network, download_speed=dl, upload_speed=ul,
+                    ping=ping, connected=True,
+                    connection_method=f'pipeline:{successful_stage}',
+                    interface=card.interface,
+                )
+            except Exception as e:
+                logger.warning(f'Speedtest failed after pipeline success: {e}')
+
+        # All stages exhausted — no internet achieved
+        card.disconnect()
+        self.card_manager.return_card(card)
+        return ConnectionResult(
+            network=network, download_speed=0, upload_speed=0,
+            ping=0, connected=False, connection_method='pipeline',
+            interface=card.interface,
+        )
+
+
+class ReconModule:
+    """Base class for background reconnaissance modules.
+
+    ReconModules run continuously, collecting intelligence about the
+    wireless environment. They have a different lifecycle from
+    ConnectionModules — start/stop rather than per-network connect.
+    """
+    name: str = 'unnamed'
+    requires_consent: bool = False
+
+    def start(self):
+        """Start background data collection."""
+        raise NotImplementedError()
+
+    def stop(self):
+        """Stop background data collection."""
+        raise NotImplementedError()
+
+    def get_data(self) -> dict:
+        """Get current collected data."""
+        return {}
+
+    def get_config_schema(self) -> dict:
+        """Return config schema for this module."""
+        return {}
+
+
 class WifiManager:
     def __init__(self):
         self.card_manager = WifiCardManager()
         self.scanner = NetworkScanner(self.card_manager)
         self.connection_monitor = ConnectionMonitor()
+
+        # Create consent manager early — modules need it during loading
+        config = get_config()
+        yaml_consent = getattr(config, 'consent', {})
+        if not isinstance(yaml_consent, dict):
+            yaml_consent = {}
+        self.consent_manager = ConsentManager(
+            mongo_uri=config.database.mongodb_uri,
+            db_name=config.database.db_name,
+            yaml_consent=yaml_consent,
+        )
+
+        # Module config store — must be created before loading modules
+        self.module_config = ModuleConfigStore(
+            mongo_uri=config.database.mongodb_uri,
+            db_name=config.database.db_name,
+        )
+
         self.modules = self._load_connection_modules()
         self.suitable_connections: list[ConnectionResult] = []
         self.nearby_networks: list[WifiNetwork] = []
-        config = get_config()
         self.metrics_store = PerformanceMetricsStore(
             mongo_uri=config.database.mongodb_uri,
             db_name=config.database.db_name,
@@ -1857,8 +2314,22 @@ class WifiManager:
         self.bandwidth_monitor = BandwidthMonitor()
         self.notification_manager = NotificationManager()
 
+        # Register config schemas from loaded modules
+        for mod in self.modules:
+            schema_method = getattr(mod, 'get_config_schema', None)
+            if schema_method:
+                schema = schema_method()
+                if schema:
+                    name = getattr(mod, 'name', mod.__class__.__name__)
+                    self.module_config.register_schema(name, schema)
+
         # Activity log for power-user UI — last 100 events
         self.activity_log: collections.deque = collections.deque(maxlen=100)
+        # Detailed per-attempt logs keyed by attempt_id (UUID)
+        self.attempt_details: dict[str, dict] = {}
+        # Locks for thread-safe parallel connection testing
+        self._connections_lock = threading.Lock()
+        self._details_lock = threading.Lock()
 
         self.status = {
             'scanning': False,
@@ -1909,21 +2380,24 @@ class WifiManager:
                                 base.__name__ == 'ConnectionModule'
                                 for base in inspect.getmro(obj)
                             )
-                            and obj.__name__ != 'ConnectionModule'
+                            and obj.__name__ not in ('ConnectionModule', 'PipelineModule')
                         ):
-                            # Pass mongodb_uri to modules that accept it
+                            # Pass optional params to modules that accept them
                             sig = inspect.signature(obj.__init__)
+                            kwargs = {}
                             if 'mongodb_uri' in sig.parameters:
-                                modules.append(obj(
-                                    self.card_manager,
-                                    mongodb_uri=config.database.mongodb_uri,
-                                ))
-                            else:
-                                modules.append(obj(self.card_manager))
+                                kwargs['mongodb_uri'] = config.database.mongodb_uri
+                            if 'consent_manager' in sig.parameters:
+                                kwargs['consent_manager'] = self.consent_manager
+                            if 'module_config' in sig.parameters:
+                                kwargs['module_config'] = self.module_config
+                            modules.append(obj(self.card_manager, **kwargs))
                             logger.info(f'Loaded module: {module_name}')
                 except Exception as e:
                     logger.error(f'Failed to load module {module_name}: {e}')
 
+        # Sort by priority (lower = runs first)
+        modules.sort(key=lambda m: getattr(m, 'priority', 50))
         return modules
 
     def use_connection(self, connection_index: int) -> bool:
@@ -2015,29 +2489,197 @@ class WifiManager:
         stats['running'] = self.status.get('auto_selection_running', False)
         return stats
 
-    def _log_activity(self, event_type: str, **kwargs):
-        """Log an activity event for the power-user UI."""
+    def _log_activity(self, event_type: str, attempt_id: str = None, **kwargs):
+        """Log an activity event for the power-user UI.
+
+        Args:
+            event_type: 'attempt', 'connected', 'failed', 'error', 'stage'
+            attempt_id: UUID linking related events. Generated for 'attempt' type.
+            **kwargs: Type-specific fields.
+        """
+        if event_type == 'attempt' and not attempt_id:
+            attempt_id = str(uuid.uuid4())
+
         entry = {
+            'id': attempt_id,
             'type': event_type,
             'timestamp': time.time(),
             **kwargs,
         }
         self.activity_log.append(entry)
+
+        # Initialize/update detail records (thread-safe)
+        with self._details_lock:
+            if event_type == 'attempt' and attempt_id:
+                self.attempt_details[attempt_id] = {
+                    'id': attempt_id,
+                    'ssid': kwargs.get('ssid', ''),
+                    'bssid': kwargs.get('bssid', ''),
+                    'module': kwargs.get('module', ''),
+                    'encryption': kwargs.get('encryption', ''),
+                    'signal': kwargs.get('signal', 0),
+                    'started_at': time.time(),
+                    'status': 'in_progress',
+                    'stages': [],
+                    'result': None,
+                }
+                if len(self.attempt_details) > 200:
+                    oldest = sorted(self.attempt_details.keys(),
+                                    key=lambda k: self.attempt_details[k].get('started_at', 0))
+                    for k in oldest[:50]:
+                        del self.attempt_details[k]
+
+            if attempt_id and attempt_id in self.attempt_details:
+                detail = self.attempt_details[attempt_id]
+                if event_type == 'connected':
+                    detail['status'] = 'connected'
+                    detail['result'] = {k: v for k, v in kwargs.items()}
+                    detail['finished_at'] = time.time()
+                elif event_type == 'failed':
+                    detail['status'] = 'failed'
+                    detail['result'] = {k: v for k, v in kwargs.items()}
+                    detail['finished_at'] = time.time()
+                elif event_type == 'error':
+                    detail['status'] = 'error'
+                    detail['result'] = {k: v for k, v in kwargs.items()}
+                    detail['finished_at'] = time.time()
+                elif event_type == 'stage':
+                    detail['stages'].append({
+                        'timestamp': time.time(),
+                        **kwargs,
+                    })
+
         try:
             emit_activity_update(entry)
         except Exception:
             pass
 
+        return attempt_id
+
+    def _try_network(self, network: WifiNetwork, module) -> Optional[ConnectionResult]:
+        """Worker: attempt one network with one module on one card.
+
+        Called from thread pool — must be thread-safe.
+        """
+        module_name = module.__class__.__name__
+        attempt_id = None
+
+        try:
+            logger.info(f'Module {module_name} attempting connection to {network.ssid}')
+            attempt_id = self._log_activity(
+                'attempt',
+                ssid=network.ssid,
+                bssid=network.bssid,
+                module=module_name,
+                encryption=network.encryption_type,
+                signal=network.signal_strength,
+                uncloaked=getattr(network, 'uncloaked', False),
+            )
+
+            # Set thread-local pending task for lease_card to pick up
+            self.card_manager._pending_tasks.task = {
+                'ssid': network.ssid,
+                'module': module_name,
+                'started_at': time.time(),
+            }
+            result = module.connect(network)
+            self.card_manager._pending_tasks.task = None
+
+            # Get the MAC address that was used for this attempt
+            used_mac = None
+            used_interface = result.interface if result else None
+            if used_interface:
+                card = self._get_card_for_interface(used_interface)
+                if card:
+                    from mac_manager import MacManager
+                    used_mac = MacManager.get_current_mac(used_interface)
+
+            # Capture pipeline stage details
+            stage_log = getattr(module, 'last_stage_log', [])
+            if attempt_id:
+                with self._details_lock:
+                    if attempt_id in self.attempt_details:
+                        if stage_log:
+                            self.attempt_details[attempt_id]['stages'] = list(stage_log)
+                        if used_mac:
+                            self.attempt_details[attempt_id]['mac'] = used_mac
+
+            if result.connected:
+                score = result.calculate_score()
+                logger.info(
+                    f'Successfully connected to {network.ssid} '
+                    f'via {module_name} (score: {score})'
+                )
+                self._log_activity(
+                    'connected', attempt_id=attempt_id,
+                    ssid=result.network.ssid or network.ssid,
+                    module=module_name,
+                    interface=result.interface,
+                    mac=used_mac or '',
+                    score=round(score, 1),
+                    download=round(result.download_speed, 1),
+                    upload=round(result.upload_speed, 1),
+                    ping=round(result.ping, 1),
+                    uncloaked=getattr(result.network, 'uncloaked', False),
+                )
+                return result
+            else:
+                logger.warning(f'Module {module_name} failed on {network.ssid}')
+                self._log_activity(
+                    'failed', attempt_id=attempt_id,
+                    ssid=network.ssid, module=module_name,
+                    mac=used_mac or '',
+                    reason='connection_failed',
+                )
+                store_connection_history(network, False)
+                return None
+
+        except Exception as e:
+            logger.error(f'Error with {module_name} on {network.ssid}: {e}')
+            self._log_activity(
+                'error', attempt_id=attempt_id,
+                ssid=network.ssid, module=module_name,
+                reason=str(e)[:100],
+            )
+            return None
+
+    def _handle_successful_connection(self, network: WifiNetwork,
+                                       result: ConnectionResult):
+        """Process a successful connection result (thread-safe)."""
+        with self._connections_lock:
+            self.suitable_connections.append(result)
+
+        # Use result.network which has the resolved SSID for hidden networks
+        rnet = result.network
+        score = result.calculate_score()
+        self.metrics_store.store_metrics(result)
+        self.connection_store.store_network(
+            ssid=rnet.ssid, bssid=rnet.bssid,
+            encryption_type=rnet.encryption_type, score=score,
+            download_speed=result.download_speed,
+            upload_speed=result.upload_speed, ping=result.ping, success=True,
+        )
+        self.notification_manager.connection_established(
+            ssid=rnet.ssid, interface=result.interface, score=score,
+        )
+        store_connection_history(rnet, True, {
+            'download': result.download_speed,
+            'upload': result.upload_speed,
+            'ping': result.ping,
+        }, result.interface)
+
+        card = self._get_card_for_interface(result.interface)
+        if card:
+            self.connection_monitor.add_card(card)
+
+        emit_connections_update()
+
     def scan_and_connect(self):
         """
-        Main loop that scans for networks and attempts connections via modules.
+        Main loop that scans for networks and tests connections in parallel.
 
-        This method runs continuously in a background thread. It:
-        1. Starts the network scanner and connection monitor
-        2. Waits for scan results
-        3. For each discovered network, checks which modules can connect
-        4. Attempts connections and stores successful results
-        5. Adds connected cards to the connection monitor for auto-reconnect
+        Uses a thread pool with one worker per available connection card,
+        allowing simultaneous network testing across multiple WiFi interfaces.
         """
         logger.info('Starting scan_and_connect loop')
         self.status['scanning'] = True
@@ -2045,7 +2687,6 @@ class WifiManager:
         self.status['auto_selection_running'] = True
         emit_status_update()
 
-        # Start the background scanner, connection monitor, auto-selector, and bandwidth monitor
         self.scanner.start_scan()
         self.connection_monitor.start()
         self.auto_selector.start()
@@ -2053,7 +2694,6 @@ class WifiManager:
 
         try:
             while True:
-                # Wait for scan results
                 try:
                     networks = self.scanner.get_next_scan()
                     logger.info(f'Scan found {len(networks)} networks')
@@ -2062,13 +2702,10 @@ class WifiManager:
                     time.sleep(5)
                     continue
 
-                # Store nearby networks for UI display
                 self.nearby_networks = sorted(
                     networks, key=lambda n: n.signal_strength, reverse=True
                 )
                 self.status['networks_found'] = len(networks)
-
-                # Update status with cards in use
                 self.status['cards_in_use'] = sum(
                     1 for card in self.card_manager.get_all_cards() if card.in_use
                 )
@@ -2076,137 +2713,60 @@ class WifiManager:
                 emit_status_update()
                 emit_scan_update()
 
-                # Try to connect to each network using available modules
+                # Build work queue: (network, module) pairs to test
+                work_items = []
+                connected_bssids = set()
+                with self._connections_lock:
+                    for conn in self.suitable_connections:
+                        if conn.connected:
+                            connected_bssids.add(conn.network.bssid)
+
                 for network in networks:
-                    # Skip networks we've already successfully connected to
-                    already_connected = any(
-                        conn.network.bssid == network.bssid and conn.connected
-                        for conn in self.suitable_connections
-                    )
-                    if already_connected:
+                    if network.bssid in connected_bssids:
                         continue
-
-                    # Check if any connection cards are available
-                    available_cards = self.card_manager.get_available_count()
-                    # Subtract 1 for scanning card reservation
-                    if available_cards <= 1:
-                        logger.debug(
-                            f'No connection cards available, skipping {network.ssid}'
-                        )
-                        break
-
-                    # Find modules that can connect to this network
-                    matched_module = False
                     for module in self.modules:
+                        # Hidden networks (empty SSID) must only go to
+                        # HiddenNetworkModule — skip all other modules
+                        if not network.ssid:
+                            if module.__class__.__name__ != 'HiddenNetworkModule':
+                                continue
+                        if module.can_connect(network):
+                            work_items.append((network, module))
+                            break  # First matching module per network
+
+                if not work_items:
+                    continue
+
+                # Number of parallel workers = available connection cards
+                num_connection_cards = len(self.card_manager.get_connection_cards())
+                max_workers = max(1, num_connection_cards)
+
+                logger.info(
+                    f'Processing {len(work_items)} network candidates '
+                    f'with {max_workers} parallel workers'
+                )
+
+                # Submit work to thread pool
+                with concurrent.futures.ThreadPoolExecutor(
+                    max_workers=max_workers
+                ) as pool:
+                    futures = {}
+                    for network, module in work_items:
+                        # Check card availability before submitting
+                        if self.card_manager.get_available_count() <= 1:
+                            break  # Reserve scanning card
+                        future = pool.submit(self._try_network, network, module)
+                        futures[future] = network
+
+                    # Collect results as they complete
+                    for future in concurrent.futures.as_completed(futures):
+                        network = futures[future]
                         try:
-                            if module.can_connect(network):
-                                matched_module = True
-                                module_name = module.__class__.__name__
-                                logger.info(
-                                    f'Module {module_name} attempting '
-                                    f'connection to {network.ssid}'
-                                )
-                                self._log_activity(
-                                    'attempt',
-                                    ssid=network.ssid,
-                                    bssid=network.bssid,
-                                    module=module_name,
-                                    encryption=network.encryption_type,
-                                    signal=network.signal_strength,
-                                )
-                                result = module.connect(network)
-
-                                if result.connected:
-                                    score = result.calculate_score()
-                                    logger.info(
-                                        f'Successfully connected to {network.ssid} '
-                                        f'via {module_name} (score: {score})'
-                                    )
-                                    self._log_activity(
-                                        'connected',
-                                        ssid=network.ssid,
-                                        module=module_name,
-                                        interface=result.interface,
-                                        score=round(score, 1),
-                                        download=round(result.download_speed, 1),
-                                        upload=round(result.upload_speed, 1),
-                                        ping=round(result.ping, 1),
-                                    )
-                                    self.suitable_connections.append(result)
-
-                                    # Store metrics to MongoDB (scoring system)
-                                    self.metrics_store.store_metrics(result)
-
-                                    # Store to connection persistence (P3)
-                                    score = result.calculate_score()
-                                    self.connection_store.store_network(
-                                        ssid=network.ssid,
-                                        bssid=network.bssid,
-                                        encryption_type=network.encryption_type,
-                                        score=score,
-                                        download_speed=result.download_speed,
-                                        upload_speed=result.upload_speed,
-                                        ping=result.ping,
-                                        success=True,
-                                    )
-
-                                    # Send notification (P3)
-                                    self.notification_manager.connection_established(
-                                        ssid=network.ssid,
-                                        interface=result.interface,
-                                        score=score,
-                                    )
-
-                                    # Store connection history (history tracking)
-                                    speed_data = {
-                                        'download': result.download_speed,
-                                        'upload': result.upload_speed,
-                                        'ping': result.ping,
-                                    }
-                                    store_connection_history(
-                                        network, True, speed_data, result.interface
-                                    )
-
-                                    # Add the connected card to monitoring for auto-reconnect
-                                    card = self._get_card_for_interface(result.interface)
-                                    if card:
-                                        self.connection_monitor.add_card(card)
-
-                                    # Emit update to all connected clients
-                                    emit_connections_update()
-
-                                    # Only need one successful connection per network
-                                    break
-                                else:
-                                    logger.warning(
-                                        f'Module {module_name} failed to '
-                                        f'connect to {network.ssid}'
-                                    )
-                                    self._log_activity(
-                                        'failed',
-                                        ssid=network.ssid,
-                                        module=module_name,
-                                        reason='connection_failed',
-                                    )
-                                    # Store failed connection attempt
-                                    store_connection_history(network, False)
+                            result = future.result()
+                            if result and result.connected:
+                                self._handle_successful_connection(network, result)
                         except Exception as e:
-                            logger.error(
-                                f'Error with module {module.__class__.__name__} '
-                                f'on network {network.ssid}: {e}'
-                            )
-                            self._log_activity(
-                                'error',
-                                ssid=network.ssid,
-                                module=module.__class__.__name__,
-                                reason=str(e)[:100],
-                            )
-
-                    if not matched_module:
-                        logger.debug(
-                            f'No module can handle {network.ssid} '
-                            f'(encryption={network.encryption_type}, open={network.is_open})'
-                        )
+                            logger.error(f'Worker error for {network.ssid}: {e}')
 
         except Exception as e:
             logger.error(f'scan_and_connect loop error: {e}')
@@ -2279,6 +2839,7 @@ def store_connection_history(
             'encryption_type': network.encryption_type,
             'success': success,
             'interface': interface,
+            'uncloaked': getattr(network, 'uncloaked', False),
         }
 
         if speed_test:
@@ -2312,6 +2873,7 @@ def emit_scan_update():
                 'channel': net.channel,
                 'encryption_type': net.encryption_type,
                 'is_open': net.is_open,
+                'uncloaked': getattr(net, 'uncloaked', False),
             })
         socketio.emit('scan_update', {'networks': scan_data})
     except Exception as e:
@@ -2330,7 +2892,9 @@ def emit_connections_update():
     """Emit current connections to all connected clients."""
     try:
         connections_data = []
-        for conn in wifi_manager.suitable_connections:
+        with wifi_manager._connections_lock:
+            conns_snapshot = list(wifi_manager.suitable_connections)
+        for conn in conns_snapshot:
             conn_dict = {
                 'network': {
                     'ssid': conn.network.ssid,
@@ -2339,6 +2903,7 @@ def emit_connections_update():
                     'channel': conn.network.channel,
                     'encryption_type': conn.network.encryption_type,
                     'is_open': conn.network.is_open,
+                    'uncloaked': getattr(conn.network, 'uncloaked', False),
                 },
                 'download_speed': conn.download_speed,
                 'upload_speed': conn.upload_speed,
@@ -2363,6 +2928,11 @@ def index():
     )
 
 
+@app.route('/config')
+def config_page():
+    return render_template('config.html')
+
+
 @app.route('/api/status')
 def get_status():
     return jsonify(wifi_manager.status)
@@ -2383,6 +2953,7 @@ def get_scan_results():
             'channel': net.channel,
             'encryption_type': net.encryption_type,
             'is_open': net.is_open,
+            'uncloaked': getattr(net, 'uncloaked', False),
         }
         for net in wifi_manager.nearby_networks
     ])
@@ -2393,15 +2964,22 @@ def get_cards():
     """Detailed per-card status for power-user UI."""
     cards = []
     for card in wifi_manager.card_manager.get_all_cards():
+        freq_info = card.get_frequency_info()
         card_info = {
             'interface': card.interface,
             'in_use': card.in_use,
             'is_up': card._is_interface_up(),
             'role': 'scanning' if card == wifi_manager.card_manager.get_scanning_card() else 'connection',
+            'mode': card.current_mode,
             'connected_network': None,
             'ip_address': card.get_ip_address(),
             'gateway': None,
             'routing_table': None,
+            'current_task': card.current_task,
+            'current_freq': freq_info.get('current_freq'),
+            'current_band': freq_info.get('current_band'),
+            'current_channel': freq_info.get('current_channel'),
+            'supported_bands': freq_info.get('supported_bands', []),
         }
         if card._connected_network:
             card_info['connected_network'] = {
@@ -2422,6 +3000,114 @@ def get_cards():
 def get_activity():
     """Recent activity log."""
     return jsonify(list(wifi_manager.activity_log))
+
+
+@app.route('/api/activity/<attempt_id>')
+def get_attempt_detail(attempt_id):
+    """Detailed log for a specific connection attempt."""
+    detail = wifi_manager.attempt_details.get(attempt_id)
+    if detail:
+        return jsonify(detail)
+    return jsonify({'error': 'Attempt not found'}), 404
+
+
+@app.route('/api/modules')
+def get_modules():
+    """List all modules with config schemas, current values, and consent status."""
+    modules = []
+    for mod in wifi_manager.modules:
+        name = getattr(mod, 'name', mod.__class__.__name__)
+        schema_method = getattr(mod, 'get_config_schema', None)
+        schema = schema_method() if schema_method else {}
+        needs_consent = getattr(mod, 'requires_consent', False)
+
+        # For PipelineModules, include stage info
+        stages_info = []
+        if hasattr(mod, 'stages'):
+            for stage in mod.stages:
+                stages_info.append({
+                    'name': stage.name,
+                    'requires_consent': stage.requires_consent,
+                    'config_schema': stage.get_config_schema(),
+                })
+
+        modules.append({
+            'name': name,
+            'class': mod.__class__.__name__,
+            'priority': getattr(mod, 'priority', 50),
+            'requires_consent': needs_consent,
+            'consent_mode': wifi_manager.consent_manager.get_mode(name) if needs_consent else None,
+            'config_schema': schema,
+            'config_values': wifi_manager.module_config.get_config(name),
+            'stages': stages_info,
+        })
+    return jsonify(modules)
+
+
+@app.route('/api/modules/<name>/config', methods=['GET'])
+def get_module_config(name):
+    return jsonify({
+        'schema': wifi_manager.module_config.get_schema(name),
+        'values': wifi_manager.module_config.get_config(name),
+    })
+
+
+@app.route('/api/modules/<name>/config', methods=['PUT'])
+def set_module_config(name):
+    data = request.get_json()
+    if not data:
+        return jsonify({'error': 'No data provided'}), 400
+    success = wifi_manager.module_config.set_config_bulk(name, data)
+    return jsonify({'success': success})
+
+
+@app.route('/api/modules/<name>/consent', methods=['POST'])
+def set_module_consent(name):
+    """Set consent mode for a module: off, on, or by_ssid."""
+    data = request.get_json()
+    mode = data.get('mode') if data else None
+
+    # Legacy boolean support
+    if mode is None and data:
+        if data.get('consented'):
+            mode = 'on'
+        else:
+            mode = 'off'
+
+    if mode not in ('off', 'on', 'by_ssid'):
+        return jsonify({'error': 'Invalid mode. Use off, on, or by_ssid'}), 400
+
+    success = wifi_manager.consent_manager.set_mode(name, mode)
+    return jsonify({'success': success, 'mode': mode})
+
+
+@app.route('/api/modules/<name>/consent/ssid', methods=['POST'])
+def approve_ssid_consent(name):
+    """Approve or revoke a specific network for a by_ssid consent module."""
+    data = request.get_json()
+    if not data or 'bssid' not in data:
+        return jsonify({'error': 'bssid required'}), 400
+
+    bssid = data['bssid']
+    ssid = data.get('ssid', '')
+
+    if data.get('approved', True):
+        success = wifi_manager.consent_manager.approve_ssid(name, bssid, ssid)
+    else:
+        success = wifi_manager.consent_manager.revoke_ssid(name, bssid)
+
+    return jsonify({'success': success})
+
+
+@app.route('/api/modules/<name>/consent/ssids')
+def get_approved_ssids(name):
+    """Get all approved networks for a module."""
+    return jsonify(wifi_manager.consent_manager.get_approved_ssids(name))
+
+
+@app.route('/api/modules/consent')
+def get_all_consent():
+    return jsonify(wifi_manager.consent_manager.get_all())
 
 
 @app.route('/api/use_connection/<int:index>', methods=['POST'])
@@ -2574,6 +3260,24 @@ def delete_saved_network(ssid):
     if deleted:
         return jsonify({'status': 'deleted', 'ssid': ssid})
     return jsonify({'status': 'not_found', 'ssid': ssid}), 404
+
+
+@app.route('/api/saved_networks', methods=['DELETE'])
+def clear_all_saved_networks():
+    """Delete all saved networks."""
+    count = wifi_manager.connection_store.clear_all()
+    return jsonify({'status': 'cleared', 'count': count})
+
+
+@app.route('/api/mac_assignments', methods=['DELETE'])
+def clear_mac_assignments():
+    """Clear all stored MAC-to-network mappings."""
+    try:
+        result = wifi_manager.card_manager.mac_manager.collection.delete_many({})
+        wifi_manager.card_manager.mac_manager._cache.clear()
+        return jsonify({'status': 'cleared', 'count': result.deleted_count})
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
 
 
 # === P3: Notification API ===

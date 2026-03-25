@@ -140,7 +140,7 @@ class TestCaptivePortalAuthenticator:
             mock_get.assert_called_once()
 
     def test_authenticate_terms_acceptance(self):
-        """Test authentication via terms acceptance."""
+        """Test authentication via terms acceptance with smart form parsing."""
         authenticator = CaptivePortalAuthenticator()
         portal_info = {
             'redirect_url': 'http://portal.example.com/terms',
@@ -148,17 +148,24 @@ class TestCaptivePortalAuthenticator:
             'portal_type': 'generic',
         }
 
-        with patch('requests.get') as mock_get, patch('requests.post') as mock_post:
-            # Mock GET response with form
-            mock_get_response = Mock()
-            mock_get_response.text = '<form action="/accept" method="post"></form>'
-            mock_get.return_value = mock_get_response
+        portal_html = '''<form action="/accept" method="post">
+            <input type="hidden" name="tk" value="x">
+            <input type="checkbox" name="terms" value="1">
+            <input type="submit" value="Accept">
+        </form>'''
+        success_html = '<html><body>Connected!</body></html>'
 
-            # Mock POST response
-            mock_post_response = Mock()
-            mock_post_response.status_code = 200
-            mock_post.return_value = mock_post_response
+        mock_session = Mock()
+        mock_get_resp = Mock(status_code=200, text=portal_html,
+                             url='http://portal.example.com/terms')
+        mock_post_resp = Mock(status_code=200, text=success_html,
+                              url='http://portal.example.com/ok')
+        mock_session.get.return_value = mock_get_resp
+        mock_session.post.return_value = mock_post_resp
+        mock_session.headers = {}
+        mock_session.mount = Mock()
 
+        with patch('modules.captivePortal.requests.Session', return_value=mock_session):
             result = authenticator.authenticate(portal_info)
             assert result is True
 

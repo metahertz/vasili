@@ -10,10 +10,12 @@ interfaces:
 
 modules:
   enabled:
-    - openNetwork
+    - hiddenNetwork
+    - openNetworkPipeline
     - wpa2Network
     - wpa3Network
-    - captivePortal
+
+consent: {}  # Per-module consent for offensive stages: {mac_clone: true, ...}
 
 scanner:
   scan_interval: 10

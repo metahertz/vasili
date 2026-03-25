@@ -108,6 +108,8 @@ class VasiliConfig:
     modules: ModuleConfig = field(default_factory=ModuleConfig)
     scanner: ScannerConfig = field(default_factory=ScannerConfig)
     web: WebConfig = field(default_factory=WebConfig)
+    # Per-module consent for headless operation: {module_name: bool}
+    consent: dict = field(default_factory=dict)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     auto_selection: AutoSelectionConfig = field(default_factory=AutoSelectionConfig)
     database: DatabaseConfig = field(default_factory=DatabaseConfig)
@@ -177,6 +179,9 @@ class VasiliConfig:
                 detection_timeout=cp_data.get('detection_timeout', 10),
                 auth_timeout=cp_data.get('auth_timeout', 15),
             )
+
+        if 'consent' in data:
+            config.consent = data['consent'] if isinstance(data['consent'], dict) else {}
 
         return config
 

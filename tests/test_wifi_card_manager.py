@@ -40,8 +40,10 @@ class TestWifiCardManagerInit:
 
         assert len(manager.cards) == 2
         assert mock_wifi_card_class.call_count == 2
-        mock_wifi_card_class.assert_any_call('wlan0')
-        mock_wifi_card_class.assert_any_call('wlan1')
+        # WifiCard is now called with mac_manager kwarg
+        call_args = [c[0][0] for c in mock_wifi_card_class.call_args_list]
+        assert 'wlan0' in call_args
+        assert 'wlan1' in call_args
 
     @patch('vasili.netifaces.interfaces')
     @patch('vasili.WifiCard')
@@ -69,7 +71,7 @@ class TestWifiCardManagerInit:
         manager = WifiCardManager()
 
         assert len(manager.cards) == 1
-        mock_wifi_card_class.assert_called_once_with('wifi0')
+        assert mock_wifi_card_class.call_args[0][0] == 'wifi0'
 
     @patch('os.path.isdir', side_effect=_mock_isdir_wireless('wlan0', 'wlan1', 'wlan2'))
     @patch('vasili.netifaces.interfaces')
