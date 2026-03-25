@@ -46,10 +46,10 @@ class HiddenNetworkModule(ConnectionModule):
     """
     priority = 5
 
-    def __init__(self, card_manager, **kwargs):
+    def __init__(self, card_manager, probe_history=None, **kwargs):
         super().__init__(card_manager, **kwargs)
+        self._probe_history = probe_history
         self._resolved: dict[str, ResolvedNetwork] = {}
-        # Cooldown: bssid -> timestamp of last failure (retry after 5 min)
         self._failed_bssids: dict[str, float] = {}
 
     RETRY_COOLDOWN = 300  # Retry failed BSSIDs after 5 minutes
@@ -133,11 +133,28 @@ class HiddenNetworkModule(ConnectionModule):
 
     def _resolve_ssid(self, network: WifiNetwork,
                       card) -> Optional[ResolvedNetwork]:
-        """Try multiple methods to resolve a hidden network's SSID."""
+        """Try multiple methods to resolve a hidden network's SSID.
+
+        Methods are ordered from cheapest to most expensive:
+        0. Module cache (in-memory)
+        1. Probe history DB (SSIDs seen by scanning card in previous cycles)
+        2. Saved nmcli connections
+        3. Directed probe scan (managed mode, uses card)
+        4. Monitor mode capture (expensive, uses card in monitor mode)
+        """
         bssid = network.bssid
 
         if bssid in self._resolved:
             return self._resolved[bssid]
+
+        # Method 0: Check probe history — SSIDs observed by the scanning card
+        # This is the cheapest check: in-memory cache backed by MongoDB.
+        # Works when the AP was previously broadcasting or when a client's
+        # probe response was captured in a prior scan cycle.
+        resolved = self._check_probe_history(bssid)
+        if resolved:
+            self._resolved[bssid] = resolved
+            return resolved
 
         # Method 1: Check nmcli saved connections (no mode change)
         resolved = self._check_saved_connections(bssid)
@@ -158,6 +175,22 @@ class HiddenNetworkModule(ConnectionModule):
             self._resolved[bssid] = resolved
             return resolved
 
+        return None
+
+    def _check_probe_history(self, bssid: str) -> Optional[ResolvedNetwork]:
+        """Check if the scanning card previously observed this BSSID with an SSID."""
+        if not self._probe_history:
+            return None
+
+        ssid = self._probe_history.lookup(bssid)
+        if ssid:
+            logger.info(f'Probe history hit: {bssid} -> "{ssid}"')
+            return ResolvedNetwork(
+                original_bssid=bssid,
+                resolved_ssid=ssid,
+                method='probe_history',
+                confidence=0.85,
+            )
         return None
 
     def _check_saved_connections(self, bssid: str) -> Optional[ResolvedNetwork]:

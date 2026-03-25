@@ -1582,13 +1582,80 @@ class WifiCardManager:
             }
 
 
+class ProbeHistory:
+    """Stores observed BSSID→SSID mappings from scan results.
+
+    When the scanning card sees a BSSID with a non-empty SSID, it records
+    the observation. Later, if the same BSSID appears as a hidden network
+    (empty SSID), the HiddenNetworkModule can look up the SSID from history.
+
+    This works because some APs alternate between broadcasting and hiding
+    their SSID, or because directed probe responses were captured in a
+    previous scan cycle.
+    """
+
+    def __init__(self, mongo_uri: str = 'mongodb://localhost:27017/',
+                 db_name: str = 'vasili'):
+        self._available = False
+        self._cache: dict[str, str] = {}  # bssid -> ssid (in-memory)
+
+        try:
+            from pymongo import MongoClient
+            from pymongo.errors import ConnectionFailure
+            client = MongoClient(mongo_uri, serverSelectionTimeoutMS=2000)
+            client.admin.command('ping')
+            self.collection = client[db_name]['probe_history']
+            self.collection.create_index('bssid', unique=True)
+            self._available = True
+
+            # Load existing history into cache
+            for doc in self.collection.find({}, {'_id': 0, 'bssid': 1, 'ssid': 1}):
+                self._cache[doc['bssid'].lower()] = doc['ssid']
+
+            logger.debug(f'ProbeHistory loaded {len(self._cache)} entries')
+        except Exception as e:
+            logger.debug(f'ProbeHistory MongoDB unavailable: {e}')
+
+    def record(self, bssid: str, ssid: str):
+        """Record an observed BSSID→SSID mapping."""
+        if not ssid:
+            return
+        bssid_lower = bssid.lower()
+        self._cache[bssid_lower] = ssid
+
+        if self._available:
+            try:
+                self.collection.update_one(
+                    {'bssid': bssid_lower},
+                    {'$set': {
+                        'bssid': bssid_lower,
+                        'ssid': ssid,
+                        'last_seen': time.time(),
+                    }},
+                    upsert=True,
+                )
+            except Exception:
+                pass
+
+    def record_batch(self, networks: list):
+        """Record all non-hidden networks from a scan batch."""
+        for net in networks:
+            if net.ssid and net.bssid:
+                self.record(net.bssid, net.ssid)
+
+    def lookup(self, bssid: str) -> Optional[str]:
+        """Look up a previously observed SSID for a BSSID."""
+        return self._cache.get(bssid.lower())
+
+
 class NetworkScanner:
-    def __init__(self, card_manager):
+    def __init__(self, card_manager, probe_history: ProbeHistory = None):
         self.card_manager = card_manager
         self.scan_results: list[WifiNetwork] = []
         self.scanning = False
         self.scan_thread = None
         self.scan_queue = queue.Queue()
+        self.probe_history = probe_history
 
     def start_scan(self):
         """Start scanning for wifi networks in a background thread"""
@@ -1633,6 +1700,10 @@ class NetworkScanner:
                 networks = card.scan()
                 self.scan_results = networks
                 self.scan_queue.put(networks)
+
+                # Record BSSID→SSID observations for hidden network resolution
+                if self.probe_history:
+                    self.probe_history.record_batch(networks)
 
                 logger.debug(f'Scan completed, found {len(networks)} networks')
 
@@ -2269,11 +2340,15 @@ class ReconModule:
 class WifiManager:
     def __init__(self):
         self.card_manager = WifiCardManager()
-        self.scanner = NetworkScanner(self.card_manager)
+        config = get_config()
+        self.probe_history = ProbeHistory(
+            mongo_uri=config.database.mongodb_uri,
+            db_name=config.database.db_name,
+        )
+        self.scanner = NetworkScanner(self.card_manager, probe_history=self.probe_history)
         self.connection_monitor = ConnectionMonitor()
 
         # Create consent manager early — modules need it during loading
-        config = get_config()
         yaml_consent = getattr(config, 'consent', {})
         if not isinstance(yaml_consent, dict):
             yaml_consent = {}
@@ -2391,6 +2466,8 @@ class WifiManager:
                                 kwargs['consent_manager'] = self.consent_manager
                             if 'module_config' in sig.parameters:
                                 kwargs['module_config'] = self.module_config
+                            if 'probe_history' in sig.parameters:
+                                kwargs['probe_history'] = self.probe_history
                             modules.append(obj(self.card_manager, **kwargs))
                             logger.info(f'Loaded module: {module_name}')
                 except Exception as e:
