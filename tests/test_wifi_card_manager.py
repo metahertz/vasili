@@ -1,17 +1,31 @@
 """Unit tests for WifiCardManager class"""
 
+import os.path as real_ospath
 from unittest.mock import Mock, patch
 
-
 from vasili import WifiCard, WifiCardManager
+
+
+def _mock_isdir_wireless(*wireless_ifaces):
+    """Create an os.path.isdir mock that treats given interfaces as wireless."""
+    wireless = set(wireless_ifaces)
+
+    def side_effect(path):
+        if '/sys/class/net/' in path and '/wireless' in path:
+            iface = path.split('/sys/class/net/')[1].split('/wireless')[0]
+            return iface in wireless
+        return real_ospath.isdir(path)
+
+    return side_effect
 
 
 class TestWifiCardManagerInit:
     """Test WifiCardManager initialization"""
 
+    @patch('os.path.isdir', side_effect=_mock_isdir_wireless('wlan0', 'wlan1'))
     @patch('vasili.netifaces.interfaces')
     @patch('vasili.WifiCard')
-    def test_init_with_wifi_cards(self, mock_wifi_card_class, mock_interfaces):
+    def test_init_with_wifi_cards(self, mock_wifi_card_class, mock_interfaces, _):
         """Test initialization with available wifi cards"""
         mock_interfaces.return_value = ['lo', 'eth0', 'wlan0', 'wlan1']
 
@@ -35,14 +49,16 @@ class TestWifiCardManagerInit:
         """Test initialization with no wifi cards"""
         mock_interfaces.return_value = ['lo', 'eth0']
 
-        manager = WifiCardManager()
+        with patch('os.path.isdir', return_value=False):
+            manager = WifiCardManager()
 
         assert len(manager.cards) == 0
         mock_wifi_card_class.assert_not_called()
 
+    @patch('os.path.isdir', side_effect=_mock_isdir_wireless('wifi0'))
     @patch('vasili.netifaces.interfaces')
     @patch('vasili.WifiCard')
-    def test_init_with_wifi_interface(self, mock_wifi_card_class, mock_interfaces):
+    def test_init_with_wifi_interface(self, mock_wifi_card_class, mock_interfaces, _):
         """Test initialization with 'wifi' prefixed interface"""
         mock_interfaces.return_value = ['lo', 'wifi0']
 
@@ -55,9 +71,10 @@ class TestWifiCardManagerInit:
         assert len(manager.cards) == 1
         mock_wifi_card_class.assert_called_once_with('wifi0')
 
+    @patch('os.path.isdir', side_effect=_mock_isdir_wireless('wlan0', 'wlan1', 'wlan2'))
     @patch('vasili.netifaces.interfaces')
     @patch('vasili.WifiCard')
-    def test_init_card_initialization_failure(self, mock_wifi_card_class, mock_interfaces):
+    def test_init_card_initialization_failure(self, mock_wifi_card_class, mock_interfaces, _):
         """Test that failed card initialization is skipped"""
         mock_interfaces.return_value = ['wlan0', 'wlan1', 'wlan2']
 
@@ -81,9 +98,10 @@ class TestWifiCardManagerInit:
 class TestWifiCardManagerScanForCards:
     """Test WifiCardManager.scan_for_cards() method"""
 
+    @patch('os.path.isdir', side_effect=_mock_isdir_wireless('wlan0', 'wlan1', 'wlan2'))
     @patch('vasili.netifaces.interfaces')
     @patch('vasili.WifiCard')
-    def test_scan_for_cards_clears_existing(self, mock_wifi_card_class, mock_interfaces):
+    def test_scan_for_cards_clears_existing(self, mock_wifi_card_class, mock_interfaces, _):
         """Test that scan_for_cards clears existing cards"""
         mock_interfaces.return_value = ['wlan0']
         mock_card = Mock(spec=WifiCard)
@@ -105,9 +123,10 @@ class TestWifiCardManagerScanForCards:
 class TestWifiCardManagerLeaseCard:
     """Test WifiCardManager.lease_card() method"""
 
+    @patch('os.path.isdir', side_effect=_mock_isdir_wireless('wlan0', 'wlan1'))
     @patch('vasili.netifaces.interfaces')
     @patch('vasili.WifiCard')
-    def test_lease_card_success(self, mock_wifi_card_class, mock_interfaces):
+    def test_lease_card_success(self, mock_wifi_card_class, mock_interfaces, _):
         """Test successfully leasing an available card"""
         mock_interfaces.return_value = ['wlan0', 'wlan1']
 
@@ -128,9 +147,10 @@ class TestWifiCardManagerLeaseCard:
         assert leased_card == mock_card2
         assert leased_card.in_use is True
 
+    @patch('os.path.isdir', side_effect=_mock_isdir_wireless('wlan0'))
     @patch('vasili.netifaces.interfaces')
     @patch('vasili.WifiCard')
-    def test_lease_card_all_in_use(self, mock_wifi_card_class, mock_interfaces):
+    def test_lease_card_all_in_use(self, mock_wifi_card_class, mock_interfaces, _):
         """Test leasing when all cards are in use"""
         mock_interfaces.return_value = ['wlan0']
 
@@ -151,15 +171,17 @@ class TestWifiCardManagerLeaseCard:
         """Test leasing when no cards exist"""
         mock_interfaces.return_value = []
 
-        manager = WifiCardManager()
+        with patch('os.path.isdir', return_value=False):
+            manager = WifiCardManager()
 
         leased_card = manager.lease_card()
 
         assert leased_card is None
 
+    @patch('os.path.isdir', side_effect=_mock_isdir_wireless('wlan0', 'wlan1', 'wlan2'))
     @patch('vasili.netifaces.interfaces')
     @patch('vasili.WifiCard')
-    def test_lease_card_skips_in_use(self, mock_wifi_card_class, mock_interfaces):
+    def test_lease_card_skips_in_use(self, mock_wifi_card_class, mock_interfaces, _):
         """Test that lease_card skips cards already in use"""
         mock_interfaces.return_value = ['wlan0', 'wlan1', 'wlan2']
 
@@ -185,9 +207,10 @@ class TestWifiCardManagerLeaseCard:
 class TestWifiCardManagerReturnCard:
     """Test WifiCardManager.return_card() method"""
 
+    @patch('os.path.isdir', side_effect=_mock_isdir_wireless('wlan0'))
     @patch('vasili.netifaces.interfaces')
     @patch('vasili.WifiCard')
-    def test_return_card_success(self, mock_wifi_card_class, mock_interfaces):
+    def test_return_card_success(self, mock_wifi_card_class, mock_interfaces, _):
         """Test successfully returning a card"""
         mock_interfaces.return_value = ['wlan0']
 
@@ -201,9 +224,10 @@ class TestWifiCardManagerReturnCard:
 
         assert mock_card.in_use is False
 
+    @patch('os.path.isdir', side_effect=_mock_isdir_wireless('wlan0'))
     @patch('vasili.netifaces.interfaces')
     @patch('vasili.WifiCard')
-    def test_return_card_not_in_manager(self, mock_wifi_card_class, mock_interfaces):
+    def test_return_card_not_in_manager(self, mock_wifi_card_class, mock_interfaces, _):
         """Test returning a card not in the manager's pool"""
         mock_interfaces.return_value = ['wlan0']
 
@@ -227,9 +251,10 @@ class TestWifiCardManagerReturnCard:
 class TestWifiCardManagerGetAllCards:
     """Test WifiCardManager.get_all_cards() method"""
 
+    @patch('os.path.isdir', side_effect=_mock_isdir_wireless('wlan0', 'wlan1'))
     @patch('vasili.netifaces.interfaces')
     @patch('vasili.WifiCard')
-    def test_get_all_cards(self, mock_wifi_card_class, mock_interfaces):
+    def test_get_all_cards(self, mock_wifi_card_class, mock_interfaces, _):
         """Test getting all cards"""
         mock_interfaces.return_value = ['wlan0', 'wlan1']
 

@@ -82,8 +82,8 @@ class TestScanFlow:
         card2 = manager.lease_card()
         assert card2 is not None
 
-    def test_parse_real_world_iwlist_output(self, all_mocks):
-        """Test parsing of realistic iwlist scan output."""
+    def test_parse_real_world_nmcli_output(self, all_mocks):
+        """Test parsing of realistic nmcli scan output."""
         manager = WifiCardManager()
         card = manager.lease_card()
 
@@ -94,7 +94,7 @@ class TestScanFlow:
             assert network.ssid != ''
             assert network.bssid != ''
             assert network.channel > 0
-            assert 0 <= network.signal_strength <= 200
+            assert 0 <= network.signal_strength <= 100
             assert isinstance(network.is_open, bool)
 
         manager.return_card(card)

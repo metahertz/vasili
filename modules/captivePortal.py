@@ -6,12 +6,12 @@ automatic authentication through common portal types.
 """
 
 import re
+import subprocess
 import time
 from typing import Optional, Dict, Any
 from urllib.parse import urlparse
 
 import requests
-import speedtest
 from pymongo import MongoClient
 from pymongo.errors import ConnectionFailure
 
@@ -32,8 +32,10 @@ CAPTIVE_TEST_URLS = [
 class PortalDatabase:
     """Handles MongoDB operations for storing portal patterns."""
 
-    def __init__(self, connection_string: str = 'mongodb://localhost:27017/'):
+    def __init__(self, connection_string: str = 'mongodb://localhost:27017/',
+                 db_name: str = 'vasili'):
         self.connection_string = connection_string
+        self.db_name = db_name
         self.client: Optional[MongoClient] = None
         self.db = None
         self.patterns_collection = None
@@ -49,7 +51,7 @@ class PortalDatabase:
             )
             # Test the connection
             self.client.admin.command('ping')
-            self.db = self.client['vasili']
+            self.db = self.client[self.db_name]
             self.patterns_collection = self.db['portal_patterns']
             logger.info('Connected to MongoDB successfully')
         except ConnectionFailure as e:
@@ -124,9 +126,13 @@ class CaptivePortalDetector:
     def __init__(self):
         self.timeout = 10
 
-    def detect(self) -> Optional[Dict[str, Any]]:
+    def detect(self, interface: str = None) -> Optional[Dict[str, Any]]:
         """
         Detect if we're behind a captive portal.
+
+        Args:
+            interface: Network interface to bind requests to.
+                      If provided, uses curl --interface for accurate detection.
 
         Returns:
             Dict with portal info if detected, None otherwise.
@@ -135,12 +141,17 @@ class CaptivePortalDetector:
         for test_url in CAPTIVE_TEST_URLS:
             try:
                 logger.debug(f'Testing connectivity with {test_url}')
-                response = requests.get(
-                    test_url,
-                    timeout=self.timeout,
-                    allow_redirects=False,
-                    headers={'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) Vasili/1.0'},
-                )
+                if interface:
+                    response = self._curl_request(test_url, interface)
+                    if response is None:
+                        continue
+                else:
+                    response = requests.get(
+                        test_url,
+                        timeout=self.timeout,
+                        allow_redirects=False,
+                        headers={'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) Vasili/1.0'},
+                    )
 
                 # Check for redirects (302, 303, 307, 308)
                 if response.status_code in [301, 302, 303, 307, 308]:
@@ -182,7 +193,45 @@ class CaptivePortalDetector:
         # No portal detected
         return None
 
-    def _analyze_portal(self, redirect_url: str, response: requests.Response) -> Dict[str, Any]:
+    def _curl_request(self, url: str, interface: str):
+        """Make an HTTP request bound to a specific interface via curl.
+
+        Returns a requests.Response-like object with status_code and headers,
+        or None on failure.
+        """
+        try:
+            result = subprocess.run(
+                [
+                    'curl', '--interface', interface,
+                    '--connect-timeout', str(self.timeout),
+                    '-s', '-o', '/dev/null',
+                    '-w', '%{http_code} %{redirect_url}',
+                    '-D', '-',  # dump headers to stdout
+                    '--max-redirs', '0',
+                    url,
+                ],
+                capture_output=True, text=True, timeout=self.timeout + 5,
+            )
+            parts = result.stdout.strip().rsplit('\n', 1)
+            if len(parts) < 1:
+                return None
+            status_line = parts[-1].strip()
+            status_parts = status_line.split(' ', 1)
+            status_code = int(status_parts[0])
+            redirect_url = status_parts[1] if len(status_parts) > 1 else ''
+
+            # Create a minimal response-like object
+            resp = type('CurlResponse', (), {
+                'status_code': status_code,
+                'headers': {'Location': redirect_url} if redirect_url else {},
+                'text': '',
+            })()
+            return resp
+        except Exception as e:
+            logger.debug(f'curl request to {url} via {interface} failed: {e}')
+            return None
+
+    def _analyze_portal(self, redirect_url: str, response) -> Dict[str, Any]:
         """Analyze portal characteristics from redirect URL and response."""
         portal_info = {
             'redirect_url': redirect_url,
@@ -391,9 +440,9 @@ class CaptivePortalModule(ConnectionModule):
                 # Use known pattern to attempt direct authentication
                 # This could be optimized in future versions
 
-            # Detect captive portal
+            # Detect captive portal (bound to the WiFi interface)
             logger.info('Checking for captive portal...')
-            portal_info = self.detector.detect()
+            portal_info = self.detector.detect(interface=card.interface)
 
             if portal_info:
                 logger.info(f'Captive portal detected: {portal_info}')
@@ -427,13 +476,9 @@ class CaptivePortalModule(ConnectionModule):
             else:
                 logger.info('No captive portal detected')
 
-            # Run speedtest to verify connection and measure performance
+            # Run speedtest bound to WiFi interface to verify connection
             logger.info('Running speedtest...')
-            st = speedtest.Speedtest()
-            st.get_best_server()
-            download_speed = st.download() / 1_000_000  # Convert to Mbps
-            upload_speed = st.upload() / 1_000_000  # Convert to Mbps
-            ping = st.results.ping
+            download_speed, upload_speed, ping = self.run_speedtest(card)
 
             logger.info(
                 f'Connection successful: {download_speed:.2f} Mbps down, '

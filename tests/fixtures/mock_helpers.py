@@ -3,8 +3,7 @@
 from subprocess import CompletedProcess
 from unittest.mock import MagicMock
 from tests.fixtures.mock_data import (
-    IWLIST_SCAN_OUTPUT,
-    IWCONFIG_OUTPUT_VALID,
+    NMCLI_SCAN_OUTPUT,
     NMCLI_CONNECT_SUCCESS,
     NMCLI_CONNECT_FAILURE,
     INTERFACE_UP,
@@ -22,14 +21,14 @@ class SubprocessMockFactory:
 
         Args:
             command_handlers: Optional dict mapping command patterns to CompletedProcess objects
-            scan_output: Optional custom scan output (defaults to IWLIST_SCAN_OUTPUT)
+            scan_output: Optional custom scan output (defaults to NMCLI_SCAN_OUTPUT)
             connect_success: Whether nmcli connect commands should succeed (default True)
 
         Returns:
             A side_effect function suitable for use with unittest.mock.patch
         """
         if scan_output is None:
-            scan_output = IWLIST_SCAN_OUTPUT
+            scan_output = NMCLI_SCAN_OUTPUT
 
         def side_effect(cmd, **kwargs):
             # Convert command to string for easier matching
@@ -44,20 +43,12 @@ class SubprocessMockFactory:
                     if pattern in cmd_str:
                         return response
 
-            # iwconfig - check if interface is wireless
-            if 'iwconfig' in cmd_str:
-                # Assume wlan* interfaces are valid
-                if 'wlan' in cmd_str:
-                    return CompletedProcess(
-                        args=cmd, returncode=0, stdout=IWCONFIG_OUTPUT_VALID, stderr=''
-                    )
-                else:
-                    return CompletedProcess(
-                        args=cmd, returncode=1, stdout='', stderr='no wireless extensions'
-                    )
+            # nmcli device wifi rescan
+            if 'nmcli' in cmd_str and 'rescan' in cmd_str:
+                return CompletedProcess(args=cmd, returncode=0, stdout='', stderr='')
 
-            # iwlist scan
-            if 'iwlist' in cmd_str and 'scan' in cmd_str:
+            # nmcli device wifi list (scanning)
+            if 'nmcli' in cmd_str and 'wifi' in cmd_str and 'list' in cmd_str:
                 return CompletedProcess(args=cmd, returncode=0, stdout=scan_output, stderr='')
 
             # ip link set up

@@ -1,12 +1,9 @@
 flask
 flask-socketio
 pymongo
-wifi
 speedtest-cli
-netifaces
+netifaces2
 python-iptables
-dataclasses
-typing
 pyyaml
 pyarchops-dnsmasq
 requests

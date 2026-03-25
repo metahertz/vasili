@@ -103,7 +103,7 @@ class TestWifiCardManager:
         manager = WifiCardManager()
 
         # Create a card that's not in the manager
-        with patch('subprocess.run'):
+        with patch('os.path.isdir', return_value=True):
             external_card = WifiCard('wlan99')
             external_card.in_use = True
 
@@ -157,10 +157,8 @@ class TestWifiCardManager:
 
     def test_scan_for_cards_handles_init_failure(self, mock_netifaces):
         """Test that scan_for_cards handles WifiCard initialization failures."""
-        with patch('subprocess.run') as mock_run:
-            # Make all iwconfig calls fail
-            mock_run.side_effect = Exception('Interface error')
-
+        # All interfaces report as non-wireless
+        with patch('os.path.isdir', return_value=False):
             manager = WifiCardManager()
             # Should have no cards due to init failures
             assert len(manager.cards) == 0

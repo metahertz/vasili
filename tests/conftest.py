@@ -1,36 +1,66 @@
 """Pytest configuration and shared fixtures."""
 
 import pytest
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 from tests.fixtures.mock_helpers import (
     SubprocessMockFactory,
     FileIOMockFactory,
     SpeedtestMockFactory,
 )
-from tests.fixtures.mock_data import SAMPLE_INTERFACES
+from tests.fixtures.mock_data import SAMPLE_INTERFACES, WIRELESS_INTERFACES
+
+
+def _mock_isdir_for_wireless(original_isdir):
+    """Create an os.path.isdir mock that recognizes wireless interfaces."""
+
+    def side_effect(path):
+        if '/sys/class/net/' in path and '/wireless' in path:
+            iface = path.split('/sys/class/net/')[1].split('/wireless')[0]
+            return iface in WIRELESS_INTERFACES
+        return original_isdir(path)
+
+    return side_effect
 
 
 @pytest.fixture
 def mock_subprocess():
     """Mock subprocess.run with smart command handling."""
+    import os.path
+
     side_effect = SubprocessMockFactory.create_mock()
-    with patch('subprocess.run', side_effect=side_effect) as mock:
+    with (
+        patch('subprocess.run', side_effect=side_effect) as mock,
+        patch('os.path.isdir', side_effect=_mock_isdir_for_wireless(os.path.isdir)),
+        patch('time.sleep'),
+    ):
         yield mock
 
 
 @pytest.fixture
 def mock_subprocess_scan_empty():
     """Mock subprocess.run with empty scan results."""
-    side_effect = SubprocessMockFactory.create_mock(scan_output='wlan0     Scan completed :\n')
-    with patch('subprocess.run', side_effect=side_effect) as mock:
+    import os.path
+
+    side_effect = SubprocessMockFactory.create_mock(scan_output='')
+    with (
+        patch('subprocess.run', side_effect=side_effect) as mock,
+        patch('os.path.isdir', side_effect=_mock_isdir_for_wireless(os.path.isdir)),
+        patch('time.sleep'),
+    ):
         yield mock
 
 
 @pytest.fixture
 def mock_subprocess_connect_fail():
     """Mock subprocess.run with connection failures."""
+    import os.path
+
     side_effect = SubprocessMockFactory.create_mock(connect_success=False)
-    with patch('subprocess.run', side_effect=side_effect) as mock:
+    with (
+        patch('subprocess.run', side_effect=side_effect) as mock,
+        patch('os.path.isdir', side_effect=_mock_isdir_for_wireless(os.path.isdir)),
+        patch('time.sleep'),
+    ):
         yield mock
 
 
@@ -106,3 +136,43 @@ def mock_time_sleep():
     """Mock time.sleep to speed up tests."""
     with patch('time.sleep') as mock:
         yield mock
+
+
+@pytest.fixture(autouse=True)
+def mock_mongodb():
+    """Mock MongoDB connections so tests don't require a live database.
+
+    CardLeaseStore: mocked to always succeed (permissive fallback).
+    ConnectionStore: mocked with in-memory dict storage.
+    PerformanceMetricsStore: mocked to report unavailable.
+    """
+    mock_lease_store = MagicMock()
+    mock_lease_store.is_available.return_value = True
+    mock_lease_store.acquire.return_value = True
+    mock_lease_store.release.return_value = True
+    mock_lease_store.release_all.return_value = 0
+    mock_lease_store.get_all_leases.return_value = []
+    mock_lease_store.clear_all.return_value = None
+
+    with patch('vasili.CardLeaseStore', return_value=mock_lease_store):
+        yield mock_lease_store
+
+
+@pytest.fixture(autouse=True)
+def mock_network_isolation():
+    """Mock network_isolation so tests don't manipulate real routing tables."""
+    with (
+        patch('vasili.network_isolation') as mock_ni,
+        patch('network_isolation.subprocess'),
+    ):
+        mock_ni.setup_interface_routing.return_value = {
+            'ip': '192.168.1.100',
+            'gateway': '192.168.1.1',
+            'table': 100,
+            'interface': 'wlan0',
+        }
+        mock_ni.teardown_interface_routing.return_value = None
+        mock_ni.verify_connectivity.return_value = True
+        mock_ni.get_interface_ip.return_value = '192.168.1.100'
+        mock_ni.get_interface_gateway.return_value = '192.168.1.1'
+        yield mock_ni

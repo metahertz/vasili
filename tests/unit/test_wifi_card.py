@@ -2,11 +2,8 @@
 
 import pytest
 from unittest.mock import patch
-from subprocess import CompletedProcess, CalledProcessError
+from subprocess import CompletedProcess
 from vasili import WifiCard, WifiNetwork
-from tests.fixtures.mock_data import (
-    IWCONFIG_OUTPUT_VALID,
-)
 
 
 @pytest.mark.unit
@@ -21,10 +18,7 @@ class TestWifiCard:
 
     def test_init_invalid_interface(self):
         """Test WifiCard initialization with invalid interface."""
-        with patch('subprocess.run') as mock_run:
-            mock_run.side_effect = CalledProcessError(
-                1, 'iwconfig', stderr='no wireless extensions'
-            )
+        with patch('os.path.isdir', return_value=False):
             with pytest.raises(ValueError, match='not a valid wireless device'):
                 WifiCard('eth0')
 
@@ -49,17 +43,30 @@ class TestWifiCard:
         assert len(networks) == 0
 
     def test_scan_failure(self):
-        """Test scan when iwlist command fails."""
-        with patch('subprocess.run') as mock_run:
-            # First call for __init__ succeeds
+        """Test scan when nmcli command fails."""
+        import os.path as real_ospath
+        from tests.fixtures.mock_data import WIRELESS_INTERFACES
+
+        def mock_isdir(path):
+            if '/sys/class/net/' in path and '/wireless' in path:
+                iface = path.split('/sys/class/net/')[1].split('/wireless')[0]
+                return iface in WIRELESS_INTERFACES
+            return real_ospath.isdir(path)
+
+        from subprocess import CalledProcessError
+
+        with (
+            patch('os.path.isdir', side_effect=mock_isdir),
+            patch('subprocess.run') as mock_run,
+            patch('time.sleep'),
+        ):
             mock_run.side_effect = [
-                CompletedProcess(args=[], returncode=0, stdout=IWCONFIG_OUTPUT_VALID),
                 # ip link set up succeeds
-                CompletedProcess(args=[], returncode=0, stdout=''),
-                # iwlist scan fails
-                CompletedProcess(
-                    args=[], returncode=1, stdout='', stderr='Operation not permitted'
-                ),
+                CompletedProcess(args=[], returncode=0, stdout='', stderr=''),
+                # nmcli rescan succeeds
+                CompletedProcess(args=[], returncode=0, stdout='', stderr=''),
+                # nmcli wifi list fails
+                CalledProcessError(1, 'nmcli'),
             ]
 
             card = WifiCard('wlan0')
@@ -67,16 +74,14 @@ class TestWifiCard:
             assert networks == []
 
     def test_scan_parses_signal_strength(self, mock_subprocess):
-        """Test that signal strength is correctly converted from dBm."""
+        """Test that signal strength is correctly parsed from nmcli output."""
         card = WifiCard('wlan0')
         networks = card.scan()
 
-        # -40 dBm should be high signal (120%)
-        assert networks[0].signal_strength >= 100
-        # -60 dBm should be medium signal (~80%)
-        assert 70 <= networks[1].signal_strength <= 90
-        # -80 dBm should be low signal (~40%)
-        assert 30 <= networks[2].signal_strength <= 50
+        # nmcli reports signal as percentage directly
+        assert networks[0].signal_strength == 95  # OpenCafe
+        assert networks[1].signal_strength == 71  # SecureHome
+        assert networks[2].signal_strength == 40  # WeakSignal
 
     def test_connect_open_network(self, mock_subprocess):
         """Test connecting to an open network."""
@@ -128,10 +133,21 @@ class TestWifiCard:
 
     def test_connect_timeout(self):
         """Test connection timeout handling."""
-        with patch('subprocess.run') as mock_run:
-            # First call for __init__ succeeds
+        import os.path as real_ospath
+        from tests.fixtures.mock_data import WIRELESS_INTERFACES
+
+        def mock_isdir(path):
+            if '/sys/class/net/' in path and '/wireless' in path:
+                iface = path.split('/sys/class/net/')[1].split('/wireless')[0]
+                return iface in WIRELESS_INTERFACES
+            return real_ospath.isdir(path)
+
+        with (
+            patch('os.path.isdir', side_effect=mock_isdir),
+            patch('subprocess.run') as mock_run,
+            patch('time.sleep'),
+        ):
             mock_run.side_effect = [
-                CompletedProcess(args=[], returncode=0, stdout=IWCONFIG_OUTPUT_VALID),
                 # ip link set up succeeds
                 CompletedProcess(args=[], returncode=0, stdout=''),
                 # nmcli disconnect succeeds
@@ -164,10 +180,21 @@ class TestWifiCard:
 
     def test_disconnect_failure(self):
         """Test disconnect failure handling."""
-        with patch('subprocess.run') as mock_run:
-            # First call for __init__ succeeds
+        import os.path as real_ospath
+        from tests.fixtures.mock_data import WIRELESS_INTERFACES
+
+        def mock_isdir(path):
+            if '/sys/class/net/' in path and '/wireless' in path:
+                iface = path.split('/sys/class/net/')[1].split('/wireless')[0]
+                return iface in WIRELESS_INTERFACES
+            return real_ospath.isdir(path)
+
+        with (
+            patch('os.path.isdir', side_effect=mock_isdir),
+            patch('subprocess.run') as mock_run,
+            patch('time.sleep'),
+        ):
             mock_run.side_effect = [
-                CompletedProcess(args=[], returncode=0, stdout=IWCONFIG_OUTPUT_VALID),
                 # nmcli disconnect fails
                 CompletedProcess(args=[], returncode=1, stdout='', stderr='Error'),
             ]

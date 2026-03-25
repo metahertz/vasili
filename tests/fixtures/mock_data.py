@@ -1,48 +1,20 @@
 """Sample data for testing WiFi operations."""
 
-# Realistic iwlist scan output with multiple networks
-IWLIST_SCAN_OUTPUT = """wlan0     Scan completed :
-          Cell 01 - Address: 00:11:22:33:44:55
-                    Channel:6
-                    Frequency:2.437 GHz (Channel 6)
-                    Quality=70/70  Signal level=-40 dBm
-                    Encryption key:off
-                    ESSID:"OpenCafe"
-                    Bit Rates:54 Mb/s
-          Cell 02 - Address: AA:BB:CC:DD:EE:FF
-                    Channel:11
-                    Frequency:2.462 GHz (Channel 11)
-                    Quality=50/70  Signal level=-60 dBm
-                    Encryption key:on
-                    ESSID:"SecureHome"
-                    Bit Rates:54 Mb/s
-                    IE: IEEE 802.11i/WPA2 Version 1
-                        Group Cipher : CCMP
-                        Pairwise Ciphers (1) : CCMP
-                        Authentication Suites (1) : PSK
-          Cell 03 - Address: 11:22:33:44:55:66
-                    Channel:1
-                    Frequency:2.412 GHz (Channel 1)
-                    Quality=30/70  Signal level=-80 dBm
-                    Encryption key:on
-                    ESSID:"WeakSignal"
-                    IE: WPA Version 1
-          Cell 04 - Address: 77:88:99:AA:BB:CC
-                    Channel:36
-                    Frequency:5.18 GHz (Channel 36)
-                    Quality=60/70  Signal level=-50 dBm
-                    Encryption key:on
-                    ESSID:"ModernWiFi"
-                    Bit Rates:600 Mb/s
-                    IE: IEEE 802.11i/WPA2 Version 1
-                        Group Cipher : CCMP
-                        Pairwise Ciphers (1) : CCMP
-                        Authentication Suites (1) : SAE
-"""
+# nmcli -t -f SSID,BSSID,SIGNAL,CHAN,SECURITY scan output
+# Note: BSSID colons are escaped as \: in nmcli -t output
+NMCLI_SCAN_OUTPUT = (
+    "OpenCafe:00\\:11\\:22\\:33\\:44\\:55:95:6:\n"
+    "SecureHome:AA\\:BB\\:CC\\:DD\\:EE\\:FF:71:11:WPA2\n"
+    "WeakSignal:11\\:22\\:33\\:44\\:55\\:66:40:1:WPA1\n"
+    "ModernWiFi:77\\:88\\:99\\:AA\\:BB\\:CC:85:36:WPA3\n"
+)
 
 # Empty scan output
-IWLIST_SCAN_EMPTY = """wlan0     Scan completed :
-"""
+NMCLI_SCAN_EMPTY = ""
+
+# Legacy names kept for backward compatibility
+IWLIST_SCAN_OUTPUT = NMCLI_SCAN_OUTPUT
+IWLIST_SCAN_EMPTY = NMCLI_SCAN_EMPTY
 
 # Sample network data structures
 SAMPLE_NETWORKS = [
@@ -80,14 +52,14 @@ SAMPLE_NETWORKS = [
     },
 ]
 
-# Sample iwconfig output for valid wireless interface
+# Sample iwconfig output (legacy, no longer used in production)
 IWCONFIG_OUTPUT_VALID = """wlan0     IEEE 802.11  ESSID:off/any
           Mode:Managed  Access Point: Not-Associated   Tx-Power=20 dBm
           Retry short limit:7   RTS thr:off   Fragment thr:off
           Power Management:off
 """
 
-# Sample iwconfig error for invalid interface
+# Sample iwconfig error for invalid interface (legacy)
 IWCONFIG_OUTPUT_INVALID = """eth0      no wireless extensions.
 """
 

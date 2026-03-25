@@ -1,9 +1,8 @@
 [Unit]
 Description=Vasili WiFi Connection Manager
 Documentation=https://github.com/your-org/vasili
-After=network-online.target mongod.service
-Wants=network-online.target
-Requires=mongod.service
+After=network-online.target NetworkManager.service mongod.service
+Wants=network-online.target NetworkManager.service mongod.service
 
 [Service]
 Type=simple

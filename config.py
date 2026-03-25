@@ -81,6 +81,26 @@ class AutoSelectionConfig:
 
 
 @dataclass
+class DatabaseConfig:
+    """Database settings."""
+
+    # MongoDB connection URI
+    mongodb_uri: str = 'mongodb://localhost:27017/'
+    # Database name
+    db_name: str = 'vasili'
+
+
+@dataclass
+class CaptivePortalConfig:
+    """Captive portal module settings."""
+
+    # Detection timeout in seconds
+    detection_timeout: int = 10
+    # Authentication timeout in seconds
+    auth_timeout: int = 15
+
+
+@dataclass
 class VasiliConfig:
     """Main configuration container."""
 
@@ -90,6 +110,8 @@ class VasiliConfig:
     web: WebConfig = field(default_factory=WebConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     auto_selection: AutoSelectionConfig = field(default_factory=AutoSelectionConfig)
+    database: DatabaseConfig = field(default_factory=DatabaseConfig)
+    captive_portal: CaptivePortalConfig = field(default_factory=CaptivePortalConfig)
 
     @classmethod
     def from_dict(cls, data: dict) -> 'VasiliConfig':
@@ -137,6 +159,23 @@ class VasiliConfig:
                 evaluation_interval=auto_data.get('evaluation_interval', 30),
                 min_score_improvement=auto_data.get('min_score_improvement', 10.0),
                 initial_delay=auto_data.get('initial_delay', 10),
+            )
+
+        if 'database' in data:
+            db_data = data['database']
+            mongodb_uri = db_data.get('mongodb_uri', 'mongodb://localhost:27017/')
+            if not mongodb_uri:
+                mongodb_uri = 'mongodb://localhost:27017/'
+            config.database = DatabaseConfig(
+                mongodb_uri=mongodb_uri,
+                db_name=db_data.get('db_name', 'vasili'),
+            )
+
+        if 'captive_portal' in data:
+            cp_data = data['captive_portal']
+            config.captive_portal = CaptivePortalConfig(
+                detection_timeout=cp_data.get('detection_timeout', 10),
+                auth_timeout=cp_data.get('auth_timeout', 15),
             )
 
         return config

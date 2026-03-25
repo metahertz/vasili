@@ -5,434 +5,239 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Vasili - WiFi Manager</title>
     <style>
-        * {
-            box-sizing: border-box;
-            margin: 0;
-            padding: 0;
-        }
-
+        * { box-sizing: border-box; margin: 0; padding: 0; }
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: #1a1a2e;
-            color: #eee;
+            font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+            background: #0d1117;
+            color: #c9d1d9;
             min-height: 100vh;
-            padding: 20px;
+            padding: 16px;
+            font-size: 13px;
         }
-
-        .container {
-            max-width: 800px;
-            margin: 0 auto;
+        .container { max-width: 960px; margin: 0 auto; }
+        h1 { text-align: center; margin-bottom: 20px; color: #58a6ff; font-size: 1.4em; }
+        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px; }
+        .grid-full { grid-column: 1 / -1; }
+        .panel {
+            background: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            padding: 12px;
         }
-
-        h1 {
-            text-align: center;
-            margin-bottom: 30px;
-            color: #00d4ff;
-        }
-
-        .status-panel {
-            background: #16213e;
-            border-radius: 12px;
-            padding: 20px;
-            margin-bottom: 20px;
-        }
-
-        .status-panel h2 {
-            margin-bottom: 15px;
-            color: #00d4ff;
-            font-size: 1.2em;
-        }
-
-        .status-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-            gap: 15px;
-        }
-
-        .status-item {
-            background: #0f3460;
-            padding: 15px;
-            border-radius: 8px;
-            text-align: center;
-        }
-
-        .status-item .label {
+        .panel h2 {
             font-size: 0.85em;
-            color: #aaa;
-            margin-bottom: 5px;
-        }
-
-        .status-item .value {
-            font-size: 1.3em;
-            font-weight: bold;
-        }
-
-        .status-item .value.active {
-            color: #00ff88;
-        }
-
-        .status-item .value.inactive {
-            color: #ff6b6b;
-        }
-
-        .bridge-info {
-            background: #0f3460;
-            padding: 15px;
-            border-radius: 8px;
-            margin-top: 15px;
-        }
-
-        .bridge-info h3 {
-            color: #00ff88;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: #8b949e;
             margin-bottom: 10px;
-            font-size: 1em;
+            border-bottom: 1px solid #21262d;
+            padding-bottom: 6px;
         }
+        .panel h2 .count { color: #58a6ff; font-weight: normal; }
 
-        .bridge-info p {
-            font-size: 0.9em;
-            color: #ccc;
-            margin: 5px 0;
-        }
-
-        .connections-panel {
-            background: #16213e;
-            border-radius: 12px;
-            padding: 20px;
-        }
-
-        .connections-panel h2 {
-            margin-bottom: 15px;
-            color: #00d4ff;
-            font-size: 1.2em;
-        }
-
-        .connection-list {
-            display: flex;
-            flex-direction: column;
-            gap: 10px;
-        }
-
-        .connection-card {
-            background: #0f3460;
-            border-radius: 8px;
-            padding: 15px;
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            transition: background 0.2s;
-        }
-
-        .connection-card:hover {
-            background: #1a4a7a;
-        }
-
-        .connection-info {
-            flex: 1;
-        }
-
-        .connection-ssid {
-            font-size: 1.1em;
-            font-weight: bold;
-            margin-bottom: 8px;
-        }
-
-        .connection-details {
+        /* Status bar */
+        .status-bar {
             display: flex;
             gap: 20px;
-            font-size: 0.85em;
-            color: #aaa;
-        }
-
-        .connection-details span {
-            display: flex;
-            align-items: center;
-            gap: 5px;
-        }
-
-        .signal-bar {
-            display: inline-flex;
-            gap: 2px;
-            margin-left: 5px;
-        }
-
-        .signal-bar .bar {
-            width: 4px;
-            background: #444;
-            border-radius: 2px;
-        }
-
-        .signal-bar .bar.active {
-            background: #00ff88;
-        }
-
-        .signal-bar .bar:nth-child(1) { height: 6px; }
-        .signal-bar .bar:nth-child(2) { height: 10px; }
-        .signal-bar .bar:nth-child(3) { height: 14px; }
-        .signal-bar .bar:nth-child(4) { height: 18px; }
-
-        .btn {
-            padding: 10px 20px;
-            border: none;
+            flex-wrap: wrap;
+            margin-bottom: 12px;
+            padding: 8px 12px;
+            background: #161b22;
+            border: 1px solid #30363d;
             border-radius: 6px;
-            cursor: pointer;
-            font-size: 0.9em;
-            font-weight: bold;
-            transition: all 0.2s;
         }
+        .status-bar .stat { display: flex; align-items: center; gap: 6px; }
+        .status-bar .stat .label { color: #8b949e; }
+        .status-bar .stat .val { font-weight: bold; }
+        .status-bar .stat .val.on { color: #3fb950; }
+        .status-bar .stat .val.off { color: #f85149; }
 
-        .btn-connect {
-            background: #00d4ff;
-            color: #1a1a2e;
+        /* Card items */
+        .card-item {
+            background: #0d1117;
+            border: 1px solid #21262d;
+            border-radius: 4px;
+            padding: 10px;
+            margin-bottom: 6px;
         }
-
-        .btn-connect:hover {
-            background: #00a8cc;
-        }
-
-        .btn-disconnect {
-            background: #ff6b6b;
-            color: #fff;
-        }
-
-        .btn-disconnect:hover {
-            background: #ee5a5a;
-        }
-
-        .empty-state {
-            text-align: center;
-            padding: 40px;
-            color: #666;
-        }
-
-        .speed-stats {
-            display: flex;
-            gap: 15px;
-            margin-top: 5px;
-        }
-
-        .speed-stat {
-            font-size: 0.85em;
-        }
-
-        .speed-stat .download {
-            color: #00ff88;
-        }
-
-        .speed-stat .upload {
-            color: #00d4ff;
-        }
-
-        .speed-stat .ping {
-            color: #ffcc00;
-        }
-
-        .refresh-btn {
-            background: transparent;
-            border: 1px solid #00d4ff;
-            color: #00d4ff;
-            padding: 8px 15px;
-            border-radius: 6px;
-            cursor: pointer;
-            font-size: 0.85em;
-            margin-left: auto;
-        }
-
-        .refresh-btn:hover {
-            background: #00d4ff22;
-        }
-
-        .header-row {
-            display: flex;
-            align-items: center;
-            margin-bottom: 15px;
-        }
-
-        .header-row h2 {
-            margin-bottom: 0;
-        }
-
-        .history-panel {
-            background: #16213e;
-            border-radius: 12px;
-            padding: 20px;
-            margin-top: 20px;
-        }
-
-        .history-panel h2 {
-            margin-bottom: 15px;
-            color: #00d4ff;
-            font-size: 1.2em;
-        }
-
-        .history-list {
-            display: flex;
-            flex-direction: column;
-            gap: 10px;
-            max-height: 400px;
-            overflow-y: auto;
-        }
-
-        .history-item {
-            background: #0f3460;
-            border-radius: 8px;
-            padding: 12px 15px;
-        }
-
-        .history-header {
+        .card-item:last-child { margin-bottom: 0; }
+        .card-header {
             display: flex;
             justify-content: space-between;
             align-items: center;
-            margin-bottom: 8px;
+            margin-bottom: 6px;
         }
-
-        .history-ssid {
+        .card-iface { font-weight: bold; color: #58a6ff; }
+        .badge {
+            font-size: 0.75em;
+            padding: 2px 6px;
+            border-radius: 3px;
             font-weight: bold;
-            font-size: 1em;
+            text-transform: uppercase;
         }
+        .badge-scanning { background: #1f6feb33; color: #58a6ff; }
+        .badge-connection { background: #23863533; color: #3fb950; }
+        .badge-idle { background: #30363d; color: #8b949e; }
+        .badge-up { background: #23863533; color: #3fb950; }
+        .badge-down { background: #f8514933; color: #f85149; }
+        .badge-open { background: #3fb95033; color: #3fb950; }
+        .badge-wpa2 { background: #d2992233; color: #d29922; }
+        .badge-wpa3 { background: #58a6ff33; color: #58a6ff; }
+        .card-detail { color: #8b949e; font-size: 0.9em; }
+        .card-detail span { margin-right: 12px; }
+        .card-detail .val { color: #c9d1d9; }
 
-        .history-status {
-            font-size: 0.85em;
-            padding: 3px 8px;
+        /* Connection cards */
+        .conn-item {
+            background: #0d1117;
+            border: 1px solid #238636;
             border-radius: 4px;
-            font-weight: bold;
+            padding: 10px;
+            margin-bottom: 6px;
         }
-
-        .history-status.success {
-            background: #00ff8822;
-            color: #00ff88;
-        }
-
-        .history-status.failed {
-            background: #ff6b6b22;
-            color: #ff6b6b;
-        }
-
-        .history-details {
+        .conn-item .ssid { font-weight: bold; font-size: 1.05em; }
+        .conn-item .method { color: #8b949e; font-size: 0.85em; }
+        .conn-stats {
             display: flex;
-            gap: 15px;
-            font-size: 0.8em;
-            color: #aaa;
-            flex-wrap: wrap;
+            gap: 16px;
+            margin-top: 6px;
+            font-size: 0.9em;
         }
+        .conn-stats .dl { color: #3fb950; }
+        .conn-stats .ul { color: #58a6ff; }
+        .conn-stats .pg { color: #d29922; }
+        .conn-stats .sc { color: #bc8cff; }
 
-        .history-speed {
-            margin-top: 5px;
+        /* Network list */
+        .net-list { max-height: 400px; overflow-y: auto; }
+        .net-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 5px 8px;
+            border-bottom: 1px solid #21262d;
+            font-size: 0.9em;
+        }
+        .net-item:last-child { border-bottom: none; }
+        .net-ssid { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .net-meta { display: flex; gap: 10px; color: #8b949e; flex-shrink: 0; margin-left: 10px; }
+        .signal-bar { display: inline-flex; gap: 1px; vertical-align: middle; }
+        .signal-bar .b { width: 3px; background: #30363d; border-radius: 1px; }
+        .signal-bar .b.a { background: #3fb950; }
+        .signal-bar .b:nth-child(1) { height: 4px; }
+        .signal-bar .b:nth-child(2) { height: 7px; }
+        .signal-bar .b:nth-child(3) { height: 10px; }
+        .signal-bar .b:nth-child(4) { height: 13px; }
+
+        /* Activity log */
+        .log-list { max-height: 350px; overflow-y: auto; font-size: 0.85em; }
+        .log-entry { padding: 4px 0; border-bottom: 1px solid #21262d; display: flex; gap: 8px; }
+        .log-entry:last-child { border-bottom: none; }
+        .log-ts { color: #484f58; flex-shrink: 0; width: 65px; }
+        .log-icon { flex-shrink: 0; width: 14px; text-align: center; }
+        .log-msg { flex: 1; }
+        .log-attempt .log-icon { color: #58a6ff; }
+        .log-connected .log-icon { color: #3fb950; }
+        .log-failed .log-icon { color: #f85149; }
+        .log-error .log-icon { color: #d29922; }
+        .log-detail { color: #8b949e; }
+
+        /* History */
+        .hist-list { max-height: 300px; overflow-y: auto; }
+        .hist-item { padding: 6px 0; border-bottom: 1px solid #21262d; font-size: 0.9em; }
+        .hist-item:last-child { border-bottom: none; }
+        .hist-header { display: flex; justify-content: space-between; }
+        .hist-ok { color: #3fb950; }
+        .hist-fail { color: #f85149; }
+        .hist-meta { color: #8b949e; font-size: 0.85em; }
+
+        /* Bandwidth */
+        .bw-item { display: flex; justify-content: space-between; padding: 4px 0; }
+        .bw-rx { color: #3fb950; }
+        .bw-tx { color: #58a6ff; }
+
+        .btn {
+            padding: 6px 14px;
+            border: 1px solid #30363d;
+            border-radius: 4px;
+            cursor: pointer;
             font-size: 0.85em;
+            font-family: inherit;
+            background: #21262d;
+            color: #c9d1d9;
         }
+        .btn:hover { background: #30363d; }
+        .btn-primary { background: #1f6feb; border-color: #1f6feb; color: #fff; }
+        .btn-primary:hover { background: #388bfd; }
+        .btn-danger { background: #da3633; border-color: #da3633; color: #fff; }
+        .btn-danger:hover { background: #f85149; }
+        .empty { color: #484f58; text-align: center; padding: 20px; font-style: italic; }
 
-        .history-speed .download {
-            color: #00ff88;
-        }
+        .header-row { display: flex; justify-content: space-between; align-items: center; }
+        .header-row h2 { margin-bottom: 0; border: none; padding: 0; }
+        .header-row .actions { display: flex; gap: 6px; }
 
-        .history-speed .upload {
-            color: #00d4ff;
-        }
-
-        .history-speed .ping {
-            color: #ffcc00;
+        @media (max-width: 700px) {
+            .grid { grid-template-columns: 1fr; }
         }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>Vasili</h1>
+        <h1>VASILI</h1>
 
-        <div class="status-panel">
-            <h2>System Status</h2>
-            <div class="status-grid">
-                <div class="status-item">
-                    <div class="label">Scanning</div>
-                    <div class="value {{ 'active' if status.scanning else 'inactive' }}">
-                        {{ 'Active' if status.scanning else 'Idle' }}
-                    </div>
-                </div>
-                <div class="status-item">
-                    <div class="label">Cards In Use</div>
-                    <div class="value">{{ status.cards_in_use }}</div>
-                </div>
-                <div class="status-item">
-                    <div class="label">Active Modules</div>
-                    <div class="value">{{ status.active_modules }}</div>
-                </div>
-            </div>
-
-            {% if status.current_bridge %}
-            <div class="bridge-info">
-                <h3>Active Bridge</h3>
-                <p><strong>SSID:</strong> {{ status.current_bridge.ssid }}</p>
-                <p><strong>WiFi Interface:</strong> {{ status.current_bridge.wifi_interface }}</p>
-                <p><strong>Ethernet Interface:</strong> {{ status.current_bridge.ethernet_interface }}</p>
-                <button class="btn btn-disconnect" onclick="stopConnection()">Disconnect</button>
-            </div>
-            {% endif %}
+        <!-- Status Bar -->
+        <div class="status-bar" id="status-bar">
+            <div class="stat"><span class="label">Scan:</span> <span class="val" id="s-scan">--</span></div>
+            <div class="stat"><span class="label">Networks:</span> <span class="val" id="s-nets">0</span></div>
+            <div class="stat"><span class="label">Cards:</span> <span class="val" id="s-cards">0</span></div>
+            <div class="stat"><span class="label">Modules:</span> <span class="val" id="s-mods">0</span></div>
+            <div class="stat"><span class="label">Reconnects:</span> <span class="val" id="s-reconn">0</span></div>
+            <div class="stat"><span class="label">Auto-select:</span> <span class="val" id="s-auto">--</span></div>
+            <div class="stat"><span class="label">MongoDB:</span> <span class="val" id="s-mongo">--</span></div>
         </div>
 
-        <div class="connections-panel">
-            <div class="header-row">
-                <h2>Available Connections</h2>
-                <button class="refresh-btn" onclick="refreshConnections()">Refresh</button>
+        <div class="grid">
+            <!-- WiFi Cards Panel -->
+            <div class="panel">
+                <h2>WiFi Cards</h2>
+                <div id="cards-list"><div class="empty">Loading...</div></div>
             </div>
 
-            <div class="connection-list" id="connection-list">
-                {% if connections %}
-                    {% for conn in connections %}
-                    <div class="connection-card">
-                        <div class="connection-info">
-                            <div class="connection-ssid">
-                                {{ conn.network.ssid or '(Hidden Network)' }}
-                                {% if conn.connected %}
-                                    <span style="color: #00ff88; font-size: 0.8em;">Connected</span>
-                                {% endif %}
-                            </div>
-                            <div class="connection-details">
-                                <span>
-                                    Signal:
-                                    <span class="signal-bar">
-                                        <span class="bar {{ 'active' if conn.network.signal_strength > 0 else '' }}"></span>
-                                        <span class="bar {{ 'active' if conn.network.signal_strength > 25 else '' }}"></span>
-                                        <span class="bar {{ 'active' if conn.network.signal_strength > 50 else '' }}"></span>
-                                        <span class="bar {{ 'active' if conn.network.signal_strength > 75 else '' }}"></span>
-                                    </span>
-                                    {{ conn.network.signal_strength }}%
-                                </span>
-                                <span>{{ conn.network.encryption_type or 'Open' }}</span>
-                                <span>Ch {{ conn.network.channel }}</span>
-                                <span>{{ conn.connection_method }}</span>
-                            </div>
-                            {% if conn.connected %}
-                            <div class="speed-stats">
-                                <span class="speed-stat">
-                                    <span class="download">{{ "%.1f"|format(conn.download_speed) }} Mbps</span>
-                                </span>
-                                <span class="speed-stat">
-                                    <span class="upload">{{ "%.1f"|format(conn.upload_speed) }} Mbps</span>
-                                </span>
-                                <span class="speed-stat">
-                                    <span class="ping">{{ "%.0f"|format(conn.ping) }} ms</span>
-                                </span>
-                            </div>
-                            {% endif %}
-                        </div>
-                        <button class="btn btn-connect" onclick="useConnection({{ loop.index0 }})">
-                            Use
-                        </button>
-                    </div>
-                    {% endfor %}
-                {% else %}
-                    <div class="empty-state">
-                        <p>No connections available yet.</p>
-                        <p>The system is scanning for networks...</p>
-                    </div>
-                {% endif %}
+            <!-- Active Connections Panel -->
+            <div class="panel">
+                <h2>Active Connections <span class="count" id="conn-count"></span></h2>
+                <div id="conn-list"><div class="empty">No active connections</div></div>
             </div>
-        </div>
 
-        <div class="history-panel">
-            <h2>Connection History</h2>
-            <div class="history-list" id="history-list">
-                <div class="empty-state">
-                    <p>Loading history...</p>
-                </div>
+            <!-- Activity Log -->
+            <div class="panel grid-full">
+                <h2>Activity Log</h2>
+                <div class="log-list" id="activity-log"><div class="empty">Waiting for activity...</div></div>
+            </div>
+
+            <!-- Nearby Networks -->
+            <div class="panel">
+                <h2>Nearby Networks <span class="count" id="scan-count"></span></h2>
+                <div class="net-list" id="network-list"><div class="empty">Scanning...</div></div>
+            </div>
+
+            <!-- Known Networks / History -->
+            <div class="panel">
+                <h2>Connection History</h2>
+                <div class="hist-list" id="history-list"><div class="empty">Loading...</div></div>
+            </div>
+
+            <!-- Bandwidth -->
+            <div class="panel">
+                <h2>Bandwidth (live)</h2>
+                <div id="bandwidth-list"><div class="empty">No data</div></div>
+            </div>
+
+            <!-- Saved Networks -->
+            <div class="panel">
+                <h2>Known Networks <span class="count" id="saved-count"></span></h2>
+                <div id="saved-list"><div class="empty">Loading...</div></div>
             </div>
         </div>
     </div>
@@ -440,229 +245,262 @@
     <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
     <script>
         const socket = io();
+        let activityEntries = [];
 
-        socket.on('connect', function() {
-            console.log('Connected to WebSocket');
-        });
+        socket.on('connect', () => console.log('WS connected'));
+        socket.on('status_update', updateStatus);
+        socket.on('connections_update', d => updateConnections(d.connections));
+        socket.on('scan_update', d => updateNearbyNetworks(d.networks));
+        socket.on('activity_update', appendActivity);
 
-        socket.on('status_update', function(status) {
-            console.log('Status update:', status);
-            updateStatus(status);
-        });
-
-        socket.on('connections_update', function(data) {
-            console.log('Connections update:', data);
-            updateConnections(data.connections);
-        });
-
-        function updateStatus(status) {
-            // Update scanning status
-            const scanningValue = document.querySelector('.status-item:nth-child(1) .value');
-            if (scanningValue) {
-                scanningValue.textContent = status.scanning ? 'Active' : 'Idle';
-                scanningValue.className = 'value ' + (status.scanning ? 'active' : 'inactive');
-            }
-
-            // Update cards in use
-            const cardsValue = document.querySelector('.status-item:nth-child(2) .value');
-            if (cardsValue) {
-                cardsValue.textContent = status.cards_in_use;
-            }
-
-            // Update active modules
-            const modulesValue = document.querySelector('.status-item:nth-child(3) .value');
-            if (modulesValue) {
-                modulesValue.textContent = status.active_modules;
-            }
-
-            // Update bridge info
-            const bridgeInfo = document.querySelector('.bridge-info');
-            const statusPanel = document.querySelector('.status-panel');
-
-            if (status.current_bridge) {
-                if (!bridgeInfo) {
-                    const bridgeHtml = `
-                        <div class="bridge-info">
-                            <h3>Active Bridge</h3>
-                            <p><strong>SSID:</strong> <span class="bridge-ssid">${status.current_bridge.ssid}</span></p>
-                            <p><strong>WiFi Interface:</strong> <span class="bridge-wifi">${status.current_bridge.wifi_interface}</span></p>
-                            <p><strong>Ethernet Interface:</strong> <span class="bridge-eth">${status.current_bridge.ethernet_interface}</span></p>
-                            <button class="btn btn-disconnect" onclick="stopConnection()">Disconnect</button>
-                        </div>
-                    `;
-                    statusPanel.insertAdjacentHTML('beforeend', bridgeHtml);
-                } else {
-                    document.querySelector('.bridge-ssid').textContent = status.current_bridge.ssid;
-                    document.querySelector('.bridge-wifi').textContent = status.current_bridge.wifi_interface;
-                    document.querySelector('.bridge-eth').textContent = status.current_bridge.ethernet_interface;
-                }
-            } else {
-                if (bridgeInfo) {
-                    bridgeInfo.remove();
-                }
-            }
+        function updateStatus(s) {
+            el('s-scan').textContent = s.scanning ? 'Active' : 'Idle';
+            el('s-scan').className = 'val ' + (s.scanning ? 'on' : 'off');
+            el('s-nets').textContent = s.networks_found || 0;
+            el('s-cards').textContent = s.cards_in_use || 0;
+            el('s-mods').textContent = s.active_modules || 0;
+            el('s-reconn').textContent = s.reconnect_events || 0;
+            el('s-auto').textContent = s.auto_selection_enabled ? 'On' : 'Off';
+            el('s-auto').className = 'val ' + (s.auto_selection_enabled ? 'on' : 'off');
+            el('s-mongo').textContent = s.metrics_available ? 'Up' : 'Down';
+            el('s-mongo').className = 'val ' + (s.metrics_available ? 'on' : 'off');
         }
 
-        function updateConnections(connections) {
-            const connectionList = document.getElementById('connection-list');
+        function updateCards(cards) {
+            const list = el('cards-list');
+            if (!cards || !cards.length) { list.innerHTML = '<div class="empty">No cards detected</div>'; return; }
+            list.innerHTML = cards.map(c => {
+                const roleBadge = c.role === 'scanning'
+                    ? '<span class="badge badge-scanning">SCAN</span>'
+                    : '<span class="badge badge-connection">CONN</span>';
+                const stateBadge = c.in_use
+                    ? '<span class="badge badge-up">IN USE</span>'
+                    : '<span class="badge badge-idle">IDLE</span>';
+                const upBadge = c.is_up
+                    ? '<span class="badge badge-up">UP</span>'
+                    : '<span class="badge badge-down">DOWN</span>';
 
-            if (!connections || connections.length === 0) {
-                connectionList.innerHTML = `
-                    <div class="empty-state">
-                        <p>No connections available yet.</p>
-                        <p>The system is scanning for networks...</p>
-                    </div>
-                `;
-                return;
-            }
+                let details = `<span>IP: <span class="val">${c.ip_address || 'none'}</span></span>`;
+                if (c.gateway) details += `<span>GW: <span class="val">${c.gateway}</span></span>`;
+                if (c.routing_table) details += `<span>Table: <span class="val">${c.routing_table}</span></span>`;
 
-            let html = '';
-            connections.forEach((conn, index) => {
-                const signalBars = [0, 25, 50, 75].map(threshold =>
-                    `<span class="bar ${conn.network.signal_strength > threshold ? 'active' : ''}"></span>`
-                ).join('');
-
-                let speedStats = '';
-                if (conn.connected) {
-                    speedStats = `
-                        <div class="speed-stats">
-                            <span class="speed-stat">
-                                <span class="download">${conn.download_speed.toFixed(1)} Mbps</span>
-                            </span>
-                            <span class="speed-stat">
-                                <span class="upload">${conn.upload_speed.toFixed(1)} Mbps</span>
-                            </span>
-                            <span class="speed-stat">
-                                <span class="ping">${conn.ping.toFixed(0)} ms</span>
-                            </span>
-                        </div>
-                    `;
+                let netInfo = '';
+                if (c.connected_network) {
+                    const n = c.connected_network;
+                    netInfo = `<div class="card-detail" style="margin-top:4px">
+                        Connected: <span class="val">${n.ssid || '(hidden)'}</span>
+                        <span class="badge badge-${(n.encryption_type||'open').toLowerCase()}">${n.encryption_type||'Open'}</span>
+                        Signal: <span class="val">${n.signal_strength}%</span>
+                    </div>`;
                 }
 
-                html += `
-                    <div class="connection-card">
-                        <div class="connection-info">
-                            <div class="connection-ssid">
-                                ${conn.network.ssid || '(Hidden Network)'}
-                                ${conn.connected ? '<span style="color: #00ff88; font-size: 0.8em;">Connected</span>' : ''}
-                            </div>
-                            <div class="connection-details">
-                                <span>
-                                    Signal:
-                                    <span class="signal-bar">${signalBars}</span>
-                                    ${conn.network.signal_strength}%
-                                </span>
-                                <span>${conn.network.encryption_type || 'Open'}</span>
-                                <span>Ch ${conn.network.channel}</span>
-                                <span>${conn.connection_method}</span>
-                            </div>
-                            ${speedStats}
-                        </div>
-                        <button class="btn btn-connect" onclick="useConnection(${index})">
-                            Use
-                        </button>
+                return `<div class="card-item">
+                    <div class="card-header">
+                        <span class="card-iface">${c.interface}</span>
+                        <span>${roleBadge} ${stateBadge} ${upBadge}</span>
                     </div>
-                `;
-            });
+                    <div class="card-detail">${details}</div>
+                    ${netInfo}
+                </div>`;
+            }).join('');
+        }
 
-            connectionList.innerHTML = html;
+        function updateConnections(conns) {
+            const list = el('conn-list');
+            el('conn-count').textContent = conns && conns.length ? `(${conns.length})` : '';
+            if (!conns || !conns.length) {
+                list.innerHTML = '<div class="empty">No active connections</div>';
+                return;
+            }
+            list.innerHTML = conns.map((c, i) => {
+                const n = c.network;
+                return `<div class="conn-item">
+                    <div style="display:flex;justify-content:space-between;align-items:center">
+                        <div>
+                            <span class="ssid">${n.ssid || '(Hidden)'}</span>
+                            <span class="method">${c.connection_method} via ${c.interface}</span>
+                        </div>
+                        <button class="btn btn-primary" onclick="useConnection(${i})">Bridge</button>
+                    </div>
+                    <div class="conn-stats">
+                        <span class="dl">${c.download_speed.toFixed(1)} Mbps down</span>
+                        <span class="ul">${c.upload_speed.toFixed(1)} Mbps up</span>
+                        <span class="pg">${c.ping.toFixed(0)} ms</span>
+                        <span class="sc">Score: ${(c.download_speed*0.4*100/100 + n.signal_strength*0.3 + c.upload_speed*0.2*100/50 + Math.max(0,100-c.ping/2)*0.1).toFixed(0)}</span>
+                    </div>
+                    <div class="card-detail" style="margin-top:4px">
+                        Signal: ${n.signal_strength}%
+                        <span class="badge badge-${(n.encryption_type||'open').toLowerCase()}">${n.encryption_type||'Open'}</span>
+                        Ch ${n.channel}
+                    </div>
+                </div>`;
+            }).join('');
+        }
+
+        function updateNearbyNetworks(nets) {
+            const list = el('network-list');
+            el('scan-count').textContent = nets ? `(${nets.length})` : '';
+            if (!nets || !nets.length) { list.innerHTML = '<div class="empty">Scanning...</div>'; return; }
+            list.innerHTML = nets.map(n => {
+                const bars = [0,25,50,75].map(t =>
+                    `<span class="b ${n.signal_strength > t ? 'a' : ''}"></span>`
+                ).join('');
+                const enc = n.encryption_type || 'Open';
+                const cls = n.is_open ? 'open' : enc.toLowerCase();
+                return `<div class="net-item">
+                    <span class="net-ssid">${n.ssid || '<i>hidden</i>'}</span>
+                    <span class="net-meta">
+                        <span class="signal-bar">${bars}</span> ${n.signal_strength}%
+                        <span class="badge badge-${cls}">${enc}</span>
+                        Ch${n.channel}
+                    </span>
+                </div>`;
+            }).join('');
+        }
+
+        function appendActivity(entry) {
+            activityEntries.push(entry);
+            if (activityEntries.length > 100) activityEntries.shift();
+            renderActivity();
+        }
+
+        function renderActivity() {
+            const list = el('activity-log');
+            if (!activityEntries.length) { list.innerHTML = '<div class="empty">Waiting for activity...</div>'; return; }
+            // Show newest first
+            const entries = [...activityEntries].reverse();
+            list.innerHTML = entries.map(e => {
+                const t = new Date(e.timestamp * 1000);
+                const ts = t.toLocaleTimeString('en-GB', {hour:'2-digit',minute:'2-digit',second:'2-digit'});
+                let icon = '?', cls = '', msg = '';
+
+                if (e.type === 'attempt') {
+                    icon = '>'; cls = 'log-attempt';
+                    msg = `<b>${e.module}</b> trying <b>${e.ssid || '(hidden)'}</b>`;
+                    msg += ` <span class="log-detail">${e.encryption || 'Open'} ${e.signal}%</span>`;
+                } else if (e.type === 'connected') {
+                    icon = '+'; cls = 'log-connected';
+                    msg = `<b>${e.ssid}</b> via <b>${e.module}</b> on ${e.interface}`;
+                    msg += ` <span class="log-detail">score:${e.score} dl:${e.download} ul:${e.upload} ping:${e.ping}ms</span>`;
+                } else if (e.type === 'failed') {
+                    icon = 'x'; cls = 'log-failed';
+                    msg = `<b>${e.module}</b> failed on <b>${e.ssid || '(hidden)'}</b>`;
+                    if (e.reason) msg += ` <span class="log-detail">${e.reason}</span>`;
+                } else if (e.type === 'error') {
+                    icon = '!'; cls = 'log-error';
+                    msg = `<b>${e.module}</b> error on <b>${e.ssid || '(hidden)'}</b>`;
+                    if (e.reason) msg += ` <span class="log-detail">${e.reason}</span>`;
+                }
+                return `<div class="log-entry ${cls}">
+                    <span class="log-ts">${ts}</span>
+                    <span class="log-icon">${icon}</span>
+                    <span class="log-msg">${msg}</span>
+                </div>`;
+            }).join('');
+        }
+
+        function updateHistory(data) {
+            const list = el('history-list');
+            if (!data || !data.length) { list.innerHTML = '<div class="empty">No history yet</div>'; return; }
+            list.innerHTML = data.map(h => {
+                const ts = new Date(h.timestamp).toLocaleString('en-GB', {
+                    month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'
+                });
+                const ok = h.success;
+                let speed = '';
+                if (ok && h.download_speed) {
+                    speed = `<span class="dl">${h.download_speed.toFixed(1)}</span>/<span class="ul">${h.upload_speed.toFixed(1)}</span> Mbps <span class="pg">${h.ping.toFixed(0)}ms</span>`;
+                }
+                return `<div class="hist-item">
+                    <div class="hist-header">
+                        <span>${h.ssid || '(hidden)'} <span class="badge badge-${(h.encryption_type||'open').toLowerCase()}">${h.encryption_type||'Open'}</span></span>
+                        <span class="${ok ? 'hist-ok' : 'hist-fail'}">${ok ? 'OK' : 'FAIL'}</span>
+                    </div>
+                    <div class="hist-meta">${ts} ${h.interface ? '| '+h.interface : ''} ${speed ? '| '+speed : ''}</div>
+                </div>`;
+            }).join('');
+        }
+
+        function updateBandwidth(data) {
+            const list = el('bandwidth-list');
+            const entries = Object.entries(data);
+            if (!entries.length) { list.innerHTML = '<div class="empty">No data</div>'; return; }
+            list.innerHTML = entries.map(([iface, bw]) => {
+                const rx = formatBytes(bw.rx_rate);
+                const tx = formatBytes(bw.tx_rate);
+                const totalRx = formatBytes(bw.rx_bytes);
+                const totalTx = formatBytes(bw.tx_bytes);
+                return `<div class="bw-item">
+                    <span class="card-iface">${iface}</span>
+                    <span><span class="bw-rx">${rx}/s rx</span> | <span class="bw-tx">${tx}/s tx</span></span>
+                </div>
+                <div class="bw-item" style="color:#8b949e;font-size:0.85em;padding-left:8px">
+                    Total: ${totalRx} rx / ${totalTx} tx
+                </div>`;
+            }).join('');
+        }
+
+        function updateSavedNetworks(data) {
+            const list = el('saved-list');
+            el('saved-count').textContent = data && data.length ? `(${data.length})` : '';
+            if (!data || !data.length) { list.innerHTML = '<div class="empty">No saved networks</div>'; return; }
+            list.innerHTML = data.map(n => {
+                const total = (n.success_count||0) + (n.fail_count||0);
+                const rate = total > 0 ? Math.round(n.success_count / total * 100) : 0;
+                return `<div class="net-item" style="flex-direction:column;align-items:flex-start;padding:6px 8px">
+                    <div style="display:flex;justify-content:space-between;width:100%">
+                        <span>${n.ssid} <span class="badge badge-${(n.encryption_type||'open').toLowerCase()}">${n.encryption_type||'Open'}</span></span>
+                        <span style="color:${rate>70?'#3fb950':'#d29922'}">${rate}% (${n.success_count}/${total})</span>
+                    </div>
+                    <div class="hist-meta">
+                        Score: ${(n.avg_score||0).toFixed(0)} |
+                        <span class="dl">${(n.avg_download||0).toFixed(1)}</span>/<span class="ul">${(n.avg_upload||0).toFixed(1)}</span> Mbps |
+                        <span class="pg">${(n.avg_ping||0).toFixed(0)}ms</span>
+                        ${n.last_connected ? '| Last: '+new Date(n.last_connected).toLocaleDateString('en-GB') : ''}
+                    </div>
+                </div>`;
+            }).join('');
+        }
+
+        function formatBytes(bytes) {
+            if (bytes < 1024) return bytes.toFixed(0) + ' B';
+            if (bytes < 1048576) return (bytes/1024).toFixed(1) + ' KB';
+            if (bytes < 1073741824) return (bytes/1048576).toFixed(1) + ' MB';
+            return (bytes/1073741824).toFixed(2) + ' GB';
         }
 
         function useConnection(index) {
-            fetch('/api/use_connection/' + index, {
-                method: 'POST'
-            })
-            .then(response => response.json())
-            .then(data => {
-                if (!data.success) {
-                    alert('Failed to connect. Please try again.');
-                }
-            })
-            .catch(err => {
-                alert('Error: ' + err.message);
-            });
+            fetch('/api/use_connection/' + index, {method: 'POST'})
+                .then(r => r.json())
+                .then(d => { if (!d.success) alert('Failed to connect'); });
         }
 
-        function stopConnection() {
-            fetch('/api/stop_connection', {
-                method: 'POST'
-            })
-            .then(response => response.json())
-            .catch(err => {
-                alert('Error: ' + err.message);
-            });
+        function el(id) { return document.getElementById(id); }
+
+        // Polling for data not pushed via WebSocket
+        function poll() {
+            fetch('/api/cards').then(r=>r.json()).then(updateCards).catch(()=>{});
+            fetch('/api/bandwidth/current').then(r=>r.json()).then(updateBandwidth).catch(()=>{});
         }
 
-        function refreshConnections() {
-            location.reload();
+        function loadOnce() {
+            fetch('/api/history').then(r=>r.json()).then(d => {
+                if (d.available && d.history) updateHistory(d.history);
+            }).catch(()=>{});
+            fetch('/api/saved_networks').then(r=>r.json()).then(updateSavedNetworks).catch(()=>{});
+            fetch('/api/activity').then(r=>r.json()).then(data => {
+                activityEntries = data || [];
+                renderActivity();
+            }).catch(()=>{});
         }
 
-        // Load history on page load
-        function loadHistory() {
-            fetch('/api/history')
-                .then(response => response.json())
-                .then(data => {
-                    if (data.available && data.history) {
-                        updateHistory(data.history);
-                    }
-                })
-                .catch(err => {
-                    console.error('Error loading history:', err);
-                });
-        }
-
-        function updateHistory(history) {
-            const historyList = document.getElementById('history-list');
-            if (!historyList) return;
-
-            if (!history || history.length === 0) {
-                historyList.innerHTML = `
-                    <div class="empty-state">
-                        <p>No connection history yet.</p>
-                    </div>
-                `;
-                return;
-            }
-
-            let html = '';
-            history.forEach(entry => {
-                const timestamp = new Date(entry.timestamp).toLocaleString();
-                const statusClass = entry.success ? 'success' : 'failed';
-                const statusText = entry.success ? 'Success' : 'Failed';
-
-                let speedInfo = '';
-                if (entry.success && entry.download_speed) {
-                    speedInfo = `
-                        <div class="history-speed">
-                            <span class="download">${entry.download_speed.toFixed(1)} Mbps</span> /
-                            <span class="upload">${entry.upload_speed.toFixed(1)} Mbps</span> /
-                            <span class="ping">${entry.ping.toFixed(0)} ms</span>
-                        </div>
-                    `;
-                }
-
-                html += `
-                    <div class="history-item">
-                        <div class="history-header">
-                            <span class="history-ssid">${entry.ssid || '(Hidden)'}</span>
-                            <span class="history-status ${statusClass}">${statusText}</span>
-                        </div>
-                        <div class="history-details">
-                            <span>${timestamp}</span>
-                            <span>Signal: ${entry.signal_strength}%</span>
-                            ${entry.encryption_type ? `<span>${entry.encryption_type}</span>` : ''}
-                            ${entry.interface ? `<span>${entry.interface}</span>` : ''}
-                        </div>
-                        ${speedInfo}
-                    </div>
-                `;
-            });
-
-            historyList.innerHTML = html;
-        }
-
-        // Load history when page loads
-        window.addEventListener('load', loadHistory);
+        window.addEventListener('load', () => {
+            loadOnce();
+            poll();
+            setInterval(poll, 5000);
+            // Refresh history/saved less frequently
+            setInterval(loadOnce, 30000);
+        });
     </script>
 </body>
 </html>

@@ -1,0 +1,422 @@
+openapi: "3.0.3"
+info:
+  title: Vasili WiFi Manager API
+  description: REST API for the Vasili automated WiFi connectivity manager
+  version: 1.0.0
+servers:
+  - url: http://localhost:5000
+    description: Local development server
+paths:
+  /:
+    get:
+      summary: Web UI
+      description: Serves the main web interface.
+      operationId: getWebUI
+      responses:
+        "200":
+          description: HTML page
+          content:
+            text/html:
+              schema:
+                type: string
+
+  /api/status:
+    get:
+      summary: System status
+      operationId: getStatus
+      responses:
+        "200":
+          description: Current system status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  scanning:
+                    type: boolean
+                  monitoring:
+                    type: boolean
+                  cards_in_use:
+                    type: integer
+                  active_modules:
+                    type: array
+                    items:
+                      type: string
+                  current_bridge:
+                    type: string
+                    nullable: true
+                  reconnect_events:
+                    type: integer
+                  metrics_available:
+                    type: boolean
+                  auto_selection_enabled:
+                    type: boolean
+                  auto_selection_running:
+                    type: boolean
+
+  /api/connections:
+    get:
+      summary: List connections
+      description: Returns a list of ConnectionResult objects.
+      operationId: getConnections
+      responses:
+        "200":
+          description: List of connection results
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ConnectionResult"
+
+  /api/use_connection/{index}:
+    post:
+      summary: Activate connection by index
+      operationId: useConnection
+      parameters:
+        - name: index
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Connection activated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  connection:
+                    $ref: "#/components/schemas/ConnectionResult"
+
+  /api/stop_connection:
+    post:
+      summary: Stop current bridge
+      operationId: stopConnection
+      responses:
+        "200":
+          description: Bridge stopped
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+
+  /api/connections/sorted:
+    get:
+      summary: Connections sorted by score
+      operationId: getConnectionsSorted
+      responses:
+        "200":
+          description: Scored and sorted connections
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    connection:
+                      $ref: "#/components/schemas/ConnectionResult"
+                    score:
+                      type: number
+                      format: float
+
+  /api/metrics/network/{ssid}:
+    get:
+      summary: Network metrics history
+      operationId: getNetworkMetrics
+      parameters:
+        - name: ssid
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Metrics history for the given network
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  avg_score:
+                    type: number
+                    format: float
+                  history:
+                    type: array
+                    items:
+                      type: object
+
+  /api/metrics/best:
+    get:
+      summary: Best performing networks
+      operationId: getBestMetrics
+      responses:
+        "200":
+          description: Networks ranked by average score
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    ssid:
+                      type: string
+                    avg_score:
+                      type: number
+                      format: float
+                    count:
+                      type: integer
+
+  /api/history:
+    get:
+      summary: Connection history
+      description: Returns connection history from MongoDB.
+      operationId: getHistory
+      responses:
+        "200":
+          description: List of history entries
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+
+  /api/auto_select/enable:
+    post:
+      summary: Enable auto-selection
+      operationId: enableAutoSelect
+      responses:
+        "200":
+          description: Auto-selection enabled
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  enabled:
+                    type: boolean
+
+  /api/auto_select/disable:
+    post:
+      summary: Disable auto-selection
+      operationId: disableAutoSelect
+      responses:
+        "200":
+          description: Auto-selection disabled
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  enabled:
+                    type: boolean
+
+  /api/auto_select/status:
+    get:
+      summary: Auto-selection status
+      operationId: getAutoSelectStatus
+      responses:
+        "200":
+          description: Current auto-selection state
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  enabled:
+                    type: boolean
+                  running:
+                    type: boolean
+                  evaluation_count:
+                    type: integer
+                  last_switch_time:
+                    type: string
+                    format: date-time
+                    nullable: true
+
+  /api/saved_networks:
+    get:
+      summary: Known/saved networks with scores
+      operationId: getSavedNetworks
+      responses:
+        "200":
+          description: List of saved networks
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+
+  /api/saved_networks/best:
+    get:
+      summary: Top performing saved networks
+      operationId: getBestSavedNetworks
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 10
+      responses:
+        "200":
+          description: Top saved networks by score
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+
+  /api/saved_networks/{ssid}:
+    delete:
+      summary: Delete a saved network
+      operationId: deleteSavedNetwork
+      parameters:
+        - name: ssid
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Network deleted
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /api/notifications:
+    get:
+      summary: Notification history
+      operationId: getNotifications
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 50
+      responses:
+        "200":
+          description: List of notifications
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+
+  /api/bandwidth/current:
+    get:
+      summary: Current bandwidth rates per interface
+      operationId: getCurrentBandwidth
+      responses:
+        "200":
+          description: Current bandwidth rates
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /api/bandwidth/history:
+    get:
+      summary: Historical bandwidth data
+      operationId: getBandwidthHistory
+      parameters:
+        - name: hours
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 24
+        - name: interface
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Bandwidth history
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /api/bandwidth/total:
+    get:
+      summary: Total bandwidth usage
+      operationId: getTotalBandwidth
+      parameters:
+        - name: hours
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 24
+        - name: interface
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Total bandwidth usage
+          content:
+            application/json:
+              schema:
+                type: object
+
+components:
+  schemas:
+    Network:
+      type: object
+      properties:
+        ssid:
+          type: string
+        bssid:
+          type: string
+        signal_strength:
+          type: integer
+        channel:
+          type: integer
+        encryption_type:
+          type: string
+        is_open:
+          type: boolean
+
+    ConnectionResult:
+      type: object
+      properties:
+        connected:
+          type: boolean
+        download_speed:
+          type: number
+          format: float
+          nullable: true
+        upload_speed:
+          type: number
+          format: float
+          nullable: true
+        ping:
+          type: number
+          format: float
+          nullable: true
+        interface:
+          type: string
+        network:
+          $ref: "#/components/schemas/Network"

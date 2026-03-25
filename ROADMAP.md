@@ -14,8 +14,8 @@ The project now has:
 - ✅ **Production-ready features** - Error handling, logging, config files, auto-reconnect
 - ✅ **Deployment tooling** - SSH deployment script for Ubuntu-based routers
 
-**Completed:** All P0, P0.5, P1, and P2 items (25 total features)
-**Next:** P3 nice-to-have enhancements
+**Completed:** All P0, P0.5, P1, P2, and P3 items (30 total features)
+**Deployed:** Running on Raspberry Pi with 3 WiFi interfaces
 
 ---
 
@@ -67,15 +67,15 @@ Features that make the tool genuinely useful.
 
 ---
 
-## P3 - Nice to Have
+## P3 - Nice to Have ✅ COMPLETE
 
 Lower priority enhancements.
 
-- [ ] **REST API documentation** - OpenAPI/Swagger spec
-- [ ] **Connection persistence** - Remember working networks and their credentials
-- [ ] **Notification system** - Alert when connection changes or degrades
-- [ ] **Bandwidth monitoring** - Track usage over time
-- [ ] **Raspberry Pi setup guide** - Hardware recommendations, SD card image
+- [x] **REST API documentation** - OpenAPI/Swagger spec at docs/openapi.yaml
+- [x] **Connection persistence** - MongoDB-backed storage of working networks (persistence.py)
+- [x] **Notification system** - WebSocket/webhook/log alerts on connection changes (notifications.py)
+- [x] **Bandwidth monitoring** - Per-interface bandwidth tracking with history (bandwidth.py)
+- [x] **Raspberry Pi setup guide** - Tested hardware, step-by-step guide (docs/RASPBERRY_PI_SETUP.md)
 
 ---
 

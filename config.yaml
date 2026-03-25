@@ -1,0 +1,41 @@
+# Vasili Configuration - Raspberry Pi Deployment
+
+interfaces:
+  preferred:
+    - wlan0
+    - wlx00c0ca3f236a
+    - wlxf81a6721ce6b
+  excluded: []
+  scan_interface: wlan0
+
+modules:
+  enabled:
+    - openNetwork
+    - wpa2Network
+    - wpa3Network
+    - captivePortal
+
+scanner:
+  scan_interval: 10
+
+web:
+  host: "0.0.0.0"
+  port: 5000
+  enabled: true
+
+logging:
+  level: "DEBUG"
+
+database:
+  mongodb_uri: "mongodb://localhost:27017/"
+  db_name: "vasili"
+
+captive_portal:
+  detection_timeout: 10
+  auth_timeout: 15
+
+auto_selection:
+  enabled: false
+  evaluation_interval: 30
+  min_score_improvement: 10.0
+  initial_delay: 10
