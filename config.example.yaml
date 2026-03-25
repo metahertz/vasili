@@ -78,3 +78,26 @@ auto_selection:
   # Initial delay before first auto-selection (seconds)
   # This allows connections to stabilize after startup
   initial_delay: 10
+
+# Host Access Point settings
+# Steal a WiFi card from the connection pool to run as a local AP.
+# Clients connecting to the AP can access the Vasili UI and share
+# internet from active connections via NAT.
+hostap:
+  # Set to true to auto-start the AP on boot
+  enabled: false
+
+  # Interface to use for the AP (omit to auto-select last connection card)
+  # interface: wlan2
+
+  # Network name broadcast by the AP
+  ssid: "Vasili-AP"
+
+  # Security mode: open, wpa2, or wpa3
+  security: "wpa2"
+
+  # Password (minimum 8 characters, ignored when security is 'open')
+  password: "vasili1234"
+
+  # WiFi channel (1-14 for 2.4GHz, 36+ for 5GHz)
+  channel: 6

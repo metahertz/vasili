@@ -153,6 +153,8 @@
             opacity: 0; transition: opacity 0.3s;
         }
         .toast.show { opacity: 1; }
+        .mod-card-disabled { opacity: 0.5; }
+        .mod-card-disabled .mod-name { text-decoration: line-through; }
     </style>
 </head>
 <body>
@@ -160,6 +162,11 @@
         <div class="nav">
             <h1>VASILI Settings</h1>
             <a href="/">Dashboard</a>
+        </div>
+
+        <div class="section">
+            <h2>Host Access Point</h2>
+            <div id="hostap-section"><div style="color:#484f58;text-align:center;padding:20px">Loading...</div></div>
         </div>
 
         <div class="section">
@@ -210,6 +217,158 @@
             t.textContent = msg;
             t.classList.add('show');
             setTimeout(() => t.classList.remove('show'), 2000);
+        }
+
+        // ----- HostAP -----
+        let hostapStatus = {};
+        let hostapConfig = {};
+        let hostapCards = [];
+
+        function loadHostAP() {
+            Promise.all([
+                fetch('/api/hostap/status').then(r => r.json()),
+                fetch('/api/hostap/config').then(r => r.json()),
+                fetch('/api/cards').then(r => r.json()),
+            ]).then(([status, config, cards]) => {
+                hostapStatus = status;
+                hostapConfig = config;
+                // Only offer connection-role cards (not scan, not already hostap)
+                hostapCards = cards.filter(c => c.role === 'connection' || c.role === 'hostap');
+                renderHostAP();
+            });
+        }
+
+        function renderHostAP() {
+            const s = hostapStatus;
+            const c = hostapConfig;
+            const active = s.is_active;
+            const section = el('hostap-section');
+
+            const ssid = c.ssid || 'Vasili-AP';
+            const security = c.security || 'wpa2';
+            const password = c.password || '';
+            const channel = c.channel || 6;
+            const iface = c.interface || '';
+
+            const ifaceOptions = hostapCards.map(card =>
+                `<option value="${card.interface}" ${card.interface===iface || card.interface===(s.interface||'') ? 'selected' : ''}>${card.interface}</option>`
+            ).join('');
+
+            const statusBadge = active
+                ? `<span class="badge badge-up">RUNNING</span> ${s.client_count||0} client${(s.client_count||0)!==1?'s':''}`
+                : '<span class="badge badge-idle">STOPPED</span>';
+
+            const upstreamInfo = active && s.upstream_interface
+                ? `<span style="color:#8b949e;font-size:0.85em;margin-left:8px">upstream: ${s.upstream_interface}</span>`
+                : active ? '<span style="color:#d29922;font-size:0.85em;margin-left:8px">no upstream (no active bridge)</span>' : '';
+
+            const disabled = active ? 'disabled' : '';
+
+            section.innerHTML = `
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+                    <div>${statusBadge}${upstreamInfo}</div>
+                    <button class="btn" style="padding:6px 16px;background:${active?'#da3633':'#238636'};border-color:${active?'#da3633':'#238636'};color:#fff;border-radius:4px;cursor:pointer;font-family:inherit"
+                        onclick="${active ? 'stopHostAP()' : 'startHostAP()'}">${active ? 'Stop AP' : 'Start AP'}</button>
+                </div>
+                <div style="display:flex;flex-direction:column;gap:10px">
+                    <div class="cfg-field">
+                        <span class="cfg-key">Interface</span>
+                        <div class="cfg-input-wrap">
+                            <select id="ha-iface" ${disabled} onchange="saveHostAPField()"
+                                style="width:100%;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;border-radius:4px;padding:5px 8px;font-family:inherit">
+                                <option value="">Auto (last available)</option>
+                                ${ifaceOptions}
+                            </select>
+                            <div class="cfg-desc">Card to use as access point (removed from connection pool)</div>
+                        </div>
+                    </div>
+                    <div class="cfg-field">
+                        <span class="cfg-key">SSID</span>
+                        <div class="cfg-input-wrap">
+                            <input id="ha-ssid" type="text" value="${ssid}" ${disabled} onchange="saveHostAPField()">
+                            <div class="cfg-desc">Network name broadcast by the access point</div>
+                        </div>
+                    </div>
+                    <div class="cfg-field">
+                        <span class="cfg-key">Security</span>
+                        <div class="cfg-input-wrap">
+                            <select id="ha-security" ${disabled} onchange="saveHostAPField();renderHostAP()"
+                                style="width:100%;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;border-radius:4px;padding:5px 8px;font-family:inherit">
+                                <option value="open" ${security==='open'?'selected':''}>Open</option>
+                                <option value="wpa2" ${security==='wpa2'?'selected':''}>WPA2</option>
+                                <option value="wpa3" ${security==='wpa3'?'selected':''}>WPA3</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="cfg-field" id="ha-pw-row" style="${security==='open'?'display:none':''}">
+                        <span class="cfg-key">Password</span>
+                        <div class="cfg-input-wrap">
+                            <input id="ha-password" type="text" value="${password}" ${disabled} onchange="saveHostAPField()">
+                            <div class="cfg-desc">Minimum 8 characters</div>
+                        </div>
+                    </div>
+                    <div class="cfg-field">
+                        <span class="cfg-key">Channel</span>
+                        <div class="cfg-input-wrap">
+                            <input id="ha-channel" type="number" min="1" max="165" value="${channel}" ${disabled} onchange="saveHostAPField()">
+                            <div class="cfg-desc">1-14 for 2.4GHz, 36+ for 5GHz</div>
+                        </div>
+                    </div>
+                </div>`;
+
+            // Update password visibility based on current security select
+            const secSel = document.getElementById('ha-security');
+            if (secSel) {
+                const pwRow = document.getElementById('ha-pw-row');
+                if (pwRow) pwRow.style.display = secSel.value === 'open' ? 'none' : '';
+            }
+        }
+
+        function getHostAPFormValues() {
+            return {
+                interface: (document.getElementById('ha-iface')||{}).value || '',
+                ssid: (document.getElementById('ha-ssid')||{}).value || 'Vasili-AP',
+                security: (document.getElementById('ha-security')||{}).value || 'wpa2',
+                password: (document.getElementById('ha-password')||{}).value || '',
+                channel: parseInt((document.getElementById('ha-channel')||{}).value) || 6,
+            };
+        }
+
+        function saveHostAPField() {
+            const vals = getHostAPFormValues();
+            hostapConfig = vals;
+            fetch('/api/hostap/config', {
+                method: 'PUT',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(vals),
+            }).then(r => r.json()).then(d => {
+                if (d.success) toast('HostAP config saved');
+            });
+        }
+
+        function startHostAP() {
+            const vals = getHostAPFormValues();
+            if (vals.security !== 'open' && vals.password.length < 8) {
+                toast('Password must be at least 8 characters');
+                return;
+            }
+            fetch('/api/hostap/start', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(vals),
+            }).then(r => r.json()).then(d => {
+                toast(d.success ? 'HostAP started' : (d.error || 'Failed to start'));
+                loadHostAP();
+            });
+        }
+
+        function stopHostAP() {
+            fetch('/api/hostap/stop', {method: 'POST'})
+                .then(r => r.json())
+                .then(d => {
+                    toast(d.success ? 'HostAP stopped' : (d.error || 'Failed to stop'));
+                    loadHostAP();
+                });
         }
 
         function loadModules() {
@@ -277,10 +436,17 @@
                     configHtml += '</div>';
                 }
 
-                return `<div class="mod-card">
+                const enabled = m.enabled !== false;
+                const disabledClass = enabled ? '' : ' mod-card-disabled';
+
+                return `<div class="mod-card${disabledClass}">
                     <div class="mod-header">
                         <span class="mod-name">${m.name}</span>
                         <div class="mod-meta">
+                            <label class="switch" title="${enabled ? 'Disable' : 'Enable'} module">
+                                <input type="checkbox" ${enabled ? 'checked' : ''} onchange="toggleModule('${m.name}', this.checked)">
+                                <span class="slider"></span>
+                            </label>
                             <span class="badge badge-scanning">Priority ${m.priority}</span>
                             <span class="badge badge-${m.stages&&m.stages.length?'connection':'idle'}">
                                 ${m.stages&&m.stages.length ? 'Pipeline' : 'Direct'}
@@ -368,6 +534,17 @@
             }).join('');
         }
 
+        function toggleModule(modName, enabled) {
+            fetch('/api/modules/' + modName + '/enabled', {
+                method: 'PUT',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({enabled}),
+            }).then(r => r.json()).then(d => {
+                toast(d.success ? (enabled ? modName + ' enabled' : modName + ' disabled') : 'Failed');
+                loadModules();
+            });
+        }
+
         function saveConfig(modName, key, value, isJson) {
             let parsed = value;
             if (isJson) {
@@ -416,7 +593,7 @@
                 .then(d => toast(d.status === 'cleared' ? label + ' cleared (' + d.count + ')' : 'Failed'));
         }
 
-        window.addEventListener('load', loadModules);
+        window.addEventListener('load', () => { loadHostAP(); loadModules(); });
     </script>
 </body>
 </html>

@@ -101,6 +101,18 @@ class CaptivePortalConfig:
 
 
 @dataclass
+class HostAPConfig:
+    """Host Access Point settings."""
+
+    enabled: bool = False
+    interface: Optional[str] = None
+    ssid: str = 'Vasili-AP'
+    security: str = 'wpa2'  # 'open', 'wpa2', 'wpa3'
+    password: str = 'vasili1234'
+    channel: int = 6
+
+
+@dataclass
 class VasiliConfig:
     """Main configuration container."""
 
@@ -114,6 +126,7 @@ class VasiliConfig:
     auto_selection: AutoSelectionConfig = field(default_factory=AutoSelectionConfig)
     database: DatabaseConfig = field(default_factory=DatabaseConfig)
     captive_portal: CaptivePortalConfig = field(default_factory=CaptivePortalConfig)
+    hostap: HostAPConfig = field(default_factory=HostAPConfig)
 
     @classmethod
     def from_dict(cls, data: dict) -> 'VasiliConfig':
@@ -178,6 +191,17 @@ class VasiliConfig:
             config.captive_portal = CaptivePortalConfig(
                 detection_timeout=cp_data.get('detection_timeout', 10),
                 auth_timeout=cp_data.get('auth_timeout', 15),
+            )
+
+        if 'hostap' in data:
+            ha_data = data['hostap']
+            config.hostap = HostAPConfig(
+                enabled=ha_data.get('enabled', False),
+                interface=ha_data.get('interface'),
+                ssid=ha_data.get('ssid', 'Vasili-AP'),
+                security=ha_data.get('security', 'wpa2'),
+                password=ha_data.get('password', 'vasili1234'),
+                channel=ha_data.get('channel', 6),
             )
 
         if 'consent' in data:

@@ -98,6 +98,7 @@
         .hist-item:last-child { border-bottom: none; }
         .hist-header { display: flex; justify-content: space-between; }
         .hist-ok { color: #3fb950; } .hist-fail { color: #f85149; }
+        .hist-reason { color: #f0883e; font-size: 0.85em; font-style: italic; }
         .hist-meta { color: #8b949e; font-size: 0.85em; }
         .bw-item { display: flex; justify-content: space-between; padding: 4px 0; }
         .bw-rx { color: #3fb950; } .bw-tx { color: #58a6ff; }
@@ -204,9 +205,11 @@
             const list = el('cards-list');
             if (!cards || !cards.length) { list.innerHTML = '<div class="empty">No cards</div>'; return; }
             list.innerHTML = cards.map(c => {
-                // Role badge: SCAN for scanning card, MON when in monitor mode, CONN otherwise
+                // Role badge: HOSTAP, SCAN, MON, or CONN
                 let role;
-                if (c.role === 'scanning') {
+                if (c.role === 'hostap') {
+                    role = '<span class="badge" style="background:#d2992233;color:#f0883e">HOSTAP</span>';
+                } else if (c.role === 'scanning') {
                     role = '<span class="badge badge-scanning">SCAN</span>';
                 } else if (c.mode === 'monitor') {
                     role = '<span class="badge" style="background:#d2992233;color:#d29922">MON</span>';
@@ -251,12 +254,25 @@
 
                 // Current task (what the card is working on right now)
                 let task = '';
-                if (c.current_task) {
+                if (c.current_task && c.role !== 'hostap') {
                     const elapsed = ((Date.now()/1000) - c.current_task.started_at).toFixed(0);
                     task = `<div class="card-detail" style="margin-top:4px;color:#d29922">
                         Working: <span class="val">${c.current_task.ssid||'(hidden)'}</span>
                         via <span class="val">${c.current_task.module}</span>
                         <span style="color:#484f58">${elapsed}s</span>
+                    </div>`;
+                }
+
+                // HostAP info
+                let hostap = '';
+                if (c.role === 'hostap' && c.hostap_info) {
+                    const h = c.hostap_info;
+                    const sec = (h.security||'open').toUpperCase();
+                    const up = h.upstream_interface ? `via ${h.upstream_interface}` : 'no upstream';
+                    hostap = `<div class="card-detail" style="margin-top:4px;color:#f0883e">
+                        AP: <span class="val">${h.ssid}</span> ${sec} Ch${h.channel}
+                        &mdash; ${h.client_count} client${h.client_count!==1?'s':''}
+                        <span style="color:#484f58">(${up})</span>
                     </div>`;
                 }
 
@@ -270,7 +286,7 @@
                         ${freqInfo}
                     </div>
                     <div class="card-detail">${details}</div>
-                    ${net}${task}
+                    ${net}${task}${hostap}
                 </div>`;
             }).join('');
         }
@@ -466,7 +482,8 @@
                 let speed = '';
                 if (ok && h.download_speed) speed = `<span class="dl">${h.download_speed.toFixed(1)}</span>/<span class="ul">${h.upload_speed.toFixed(1)}</span> <span class="pg">${h.ping.toFixed(0)}ms</span>`;
                 const huc = h.uncloaked ? ' <span class="badge badge-uncloaked">UNCLOAKED</span>' : '';
-                return `<div class="hist-item"><div class="hist-header"><span>${h.ssid||'(hidden)'}${huc} <span class="badge badge-${(h.encryption_type||'open').toLowerCase()}">${h.encryption_type||'Open'}</span></span><span class="${ok?'hist-ok':'hist-fail'}">${ok?'OK':'FAIL'}</span></div><div class="hist-meta">${ts} ${h.interface?'| '+h.interface:''} ${speed?'| '+speed:''}</div></div>`;
+                const reason = !ok && h.failure_reason ? ` <span class="hist-reason">— ${h.failure_reason}</span>` : '';
+                return `<div class="hist-item"><div class="hist-header"><span>${h.ssid||'(hidden)'}${huc} <span class="badge badge-${(h.encryption_type||'open').toLowerCase()}">${h.encryption_type||'Open'}</span></span><span class="${ok?'hist-ok':'hist-fail'}">${ok?'OK':'FAIL'}${reason}</span></div><div class="hist-meta">${ts} ${h.interface?'| '+h.interface:''} ${speed?'| '+speed:''}</div></div>`;
             }).join('');
         }
 

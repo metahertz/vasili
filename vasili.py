@@ -8,6 +8,7 @@ import importlib
 import inspect
 import os
 import queue
+import shutil
 import subprocess
 import threading
 import time
@@ -828,6 +829,400 @@ class NetworkBridge:
         }
 
 
+class HostAP:
+    """Manage a WiFi card as a local access point using hostapd."""
+
+    CONF_PATH = '/tmp/vasili-hostapd.conf'
+    AP_SUBNET = '192.168.11'
+    AP_IP = '192.168.11.1'
+    DHCP_RANGE = ('192.168.11.50', '192.168.11.150')
+
+    def __init__(self, interface: str, ssid: str, security: str,
+                 password: str, channel: int):
+        self.interface = interface
+        self.ssid = ssid
+        self.security = security  # 'open', 'wpa2', 'wpa3'
+        self.password = password
+        self.channel = channel
+        self._hostapd_process: Optional[subprocess.Popen] = None
+        self._dhcp_server = None
+        self._upstream_interface: Optional[str] = None
+        self._ip_configured = False
+        self.is_active = False
+
+    # ------------------------------------------------------------------
+    # Pre-flight checks
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def check_hostapd_installed() -> bool:
+        return shutil.which('hostapd') is not None
+
+    def _get_phy(self) -> Optional[str]:
+        """Get the phy name for the interface (e.g. phy0)."""
+        phy_path = f'/sys/class/net/{self.interface}/phy80211/name'
+        try:
+            with open(phy_path) as f:
+                return f.read().strip()
+        except Exception:
+            return None
+
+    def check_ap_support(self) -> bool:
+        """Check if the interface supports AP mode."""
+        phy = self._get_phy()
+        if not phy:
+            return False
+        try:
+            result = subprocess.run(
+                ['iw', 'phy', phy, 'info'],
+                capture_output=True, text=True, timeout=5,
+            )
+            in_modes = False
+            for line in result.stdout.splitlines():
+                stripped = line.strip()
+                if stripped.startswith('Supported interface modes'):
+                    in_modes = True
+                    continue
+                if in_modes:
+                    if stripped.startswith('*'):
+                        if 'AP' in stripped.split():
+                            return True
+                    else:
+                        break
+            return False
+        except Exception:
+            return False
+
+    # ------------------------------------------------------------------
+    # hostapd config generation
+    # ------------------------------------------------------------------
+
+    def _write_hostapd_conf(self) -> str:
+        """Generate hostapd configuration file. Returns path."""
+        # Determine hw_mode based on channel
+        hw_mode = 'a' if self.channel > 14 else 'g'
+
+        lines = [
+            f'interface={self.interface}',
+            f'ssid={self.ssid}',
+            f'hw_mode={hw_mode}',
+            f'channel={self.channel}',
+            'ieee80211n=1',
+            'wmm_enabled=1',
+        ]
+
+        if hw_mode == 'a':
+            lines.append('ieee80211ac=1')
+
+        if self.security == 'open':
+            lines.append('auth_algs=1')
+            lines.append('wpa=0')
+        elif self.security == 'wpa2':
+            lines.extend([
+                'auth_algs=1',
+                'wpa=2',
+                'wpa_key_mgmt=WPA-PSK',
+                'rsn_pairwise=CCMP',
+                f'wpa_passphrase={self.password}',
+            ])
+        elif self.security == 'wpa3':
+            lines.extend([
+                'auth_algs=1',
+                'wpa=2',
+                'wpa_key_mgmt=SAE',
+                'rsn_pairwise=CCMP',
+                'ieee80211w=2',
+                f'sae_password={self.password}',
+            ])
+
+        conf = '\n'.join(lines) + '\n'
+        with open(self.CONF_PATH, 'w') as f:
+            f.write(conf)
+        return self.CONF_PATH
+
+    # ------------------------------------------------------------------
+    # Interface configuration
+    # ------------------------------------------------------------------
+
+    def _configure_interface(self) -> bool:
+        """Disconnect from NetworkManager and assign static IP."""
+        # Disconnect any NM-managed connection on this interface
+        subprocess.run(
+            ['nmcli', 'device', 'disconnect', self.interface],
+            capture_output=True, text=True,
+        )
+        # Flush existing addresses
+        subprocess.run(
+            ['ip', 'addr', 'flush', 'dev', self.interface],
+            capture_output=True, text=True,
+        )
+        # Assign static IP
+        result = subprocess.run(
+            ['ip', 'addr', 'add', f'{self.AP_IP}/24', 'dev', self.interface],
+            capture_output=True, text=True,
+        )
+        if result.returncode != 0 and 'File exists' not in result.stderr:
+            logger.error(f'HostAP: failed to assign IP: {result.stderr}')
+            return False
+        self._ip_configured = True
+        # Bring interface up
+        result = subprocess.run(
+            ['ip', 'link', 'set', self.interface, 'up'],
+            capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            logger.error(f'HostAP: failed to bring up interface: {result.stderr}')
+            return False
+        return True
+
+    def _cleanup_interface(self):
+        """Remove the static IP from the AP interface."""
+        if self._ip_configured:
+            subprocess.run(
+                ['ip', 'addr', 'del', f'{self.AP_IP}/24', 'dev', self.interface],
+                capture_output=True,
+            )
+            self._ip_configured = False
+
+    # ------------------------------------------------------------------
+    # hostapd process
+    # ------------------------------------------------------------------
+
+    def _start_hostapd(self) -> bool:
+        """Launch hostapd as a subprocess."""
+        try:
+            self._hostapd_process = subprocess.Popen(
+                ['hostapd', self.CONF_PATH],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            )
+            # Give hostapd a moment to start
+            time.sleep(2)
+            if self._hostapd_process.poll() is not None:
+                _, stderr = self._hostapd_process.communicate()
+                logger.error(f'HostAP: hostapd exited: {stderr.decode()[:200]}')
+                self._hostapd_process = None
+                return False
+            logger.info(f'HostAP: hostapd started (pid {self._hostapd_process.pid})')
+            return True
+        except Exception as e:
+            logger.error(f'HostAP: failed to start hostapd: {e}')
+            return False
+
+    def _stop_hostapd(self):
+        """Stop hostapd process."""
+        if self._hostapd_process:
+            try:
+                self._hostapd_process.terminate()
+                self._hostapd_process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self._hostapd_process.kill()
+                self._hostapd_process.wait()
+            except Exception as e:
+                logger.warning(f'HostAP: error stopping hostapd: {e}')
+            self._hostapd_process = None
+
+    # ------------------------------------------------------------------
+    # DHCP
+    # ------------------------------------------------------------------
+
+    def _start_dhcp(self) -> bool:
+        """Start DHCP server on the AP interface."""
+        try:
+            self._dhcp_server = dnsmasq.DHCP(
+                interface=self.interface,
+                dhcp_range=self.DHCP_RANGE,
+                subnet_mask='255.255.255.0',
+            )
+            self._dhcp_server.start()
+            logger.info('HostAP: DHCP server started')
+            return True
+        except Exception as e:
+            logger.error(f'HostAP: failed to start DHCP: {e}')
+            return False
+
+    def _stop_dhcp(self):
+        if self._dhcp_server:
+            try:
+                self._dhcp_server.stop()
+            except Exception as e:
+                logger.warning(f'HostAP: error stopping DHCP: {e}')
+            self._dhcp_server = None
+
+    # ------------------------------------------------------------------
+    # NAT
+    # ------------------------------------------------------------------
+
+    def _setup_nat(self, upstream: str) -> bool:
+        """Set up NAT from AP interface to upstream WiFi connection."""
+        try:
+            # Enable IP forwarding
+            try:
+                with open('/proc/sys/net/ipv4/ip_forward', 'w') as f:
+                    f.write('1')
+            except Exception as e:
+                logger.error(f'HostAP: cannot enable IP forwarding: {e}')
+                return False
+
+            # Create hostap-specific iptables chains
+            for cmd in [
+                ['iptables', '-N', 'VASILI-HOSTAP-FWD'],
+                ['iptables', '-t', 'nat', '-N', 'VASILI-HOSTAP-NAT'],
+            ]:
+                result = subprocess.run(cmd, capture_output=True, text=True)
+                if result.returncode != 0 and 'already exists' not in result.stderr.lower():
+                    logger.debug(f'HostAP chain creation: {result.stderr.strip()}')
+
+            # Flush chains
+            subprocess.run(['iptables', '-F', 'VASILI-HOSTAP-FWD'], capture_output=True)
+            subprocess.run(['iptables', '-t', 'nat', '-F', 'VASILI-HOSTAP-NAT'], capture_output=True)
+
+            # Jump into hostap chains from main chains (idempotent)
+            for jump_cmd in [
+                ['iptables', '-C', 'FORWARD', '-j', 'VASILI-HOSTAP-FWD'],
+                ['iptables', '-t', 'nat', '-C', 'POSTROUTING', '-j', 'VASILI-HOSTAP-NAT'],
+            ]:
+                result = subprocess.run(jump_cmd, capture_output=True, text=True)
+                if result.returncode != 0:
+                    add_cmd = [jump_cmd[0]] + ['-A' if c == '-C' else c for c in jump_cmd[1:]]
+                    subprocess.run(add_cmd, capture_output=True)
+
+            # Masquerade AP traffic going out upstream
+            result = subprocess.run([
+                'iptables', '-t', 'nat', '-A', 'VASILI-HOSTAP-NAT',
+                '-s', f'{self.AP_SUBNET}.0/24', '-o', upstream, '-j', 'MASQUERADE',
+            ], capture_output=True, text=True)
+            if result.returncode != 0:
+                logger.error(f'HostAP NAT masquerade failed: {result.stderr}')
+                self._cleanup_nat()
+                return False
+
+            # Forward AP -> upstream
+            result = subprocess.run([
+                'iptables', '-A', 'VASILI-HOSTAP-FWD',
+                '-i', self.interface, '-o', upstream, '-j', 'ACCEPT',
+            ], capture_output=True, text=True)
+            if result.returncode != 0:
+                logger.error(f'HostAP forward rule failed: {result.stderr}')
+                self._cleanup_nat()
+                return False
+
+            # Forward upstream -> AP (established/related)
+            result = subprocess.run([
+                'iptables', '-A', 'VASILI-HOSTAP-FWD',
+                '-i', upstream, '-o', self.interface,
+                '-m', 'state', '--state', 'RELATED,ESTABLISHED', '-j', 'ACCEPT',
+            ], capture_output=True, text=True)
+            if result.returncode != 0:
+                logger.error(f'HostAP reverse forward rule failed: {result.stderr}')
+                self._cleanup_nat()
+                return False
+
+            self._upstream_interface = upstream
+            logger.info(f'HostAP: NAT configured ({self.interface} -> {upstream})')
+            return True
+        except Exception as e:
+            logger.error(f'HostAP NAT setup failed: {e}')
+            self._cleanup_nat()
+            return False
+
+    def _cleanup_nat(self):
+        """Flush hostap iptables chains."""
+        subprocess.run(['iptables', '-F', 'VASILI-HOSTAP-FWD'], capture_output=True)
+        subprocess.run(['iptables', '-t', 'nat', '-F', 'VASILI-HOSTAP-NAT'], capture_output=True)
+        self._upstream_interface = None
+
+    def update_upstream(self, new_upstream: str):
+        """Re-point NAT to a different upstream interface."""
+        if not self.is_active:
+            return
+        if new_upstream == self._upstream_interface:
+            return
+        logger.info(f'HostAP: switching upstream {self._upstream_interface} -> {new_upstream}')
+        self._cleanup_nat()
+        self._setup_nat(new_upstream)
+
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
+
+    def start(self, upstream_interface: Optional[str] = None) -> bool:
+        """Start the full HostAP stack."""
+        if not self.check_hostapd_installed():
+            logger.error('HostAP: hostapd not installed')
+            return False
+
+        if not self.check_ap_support():
+            logger.error(f'HostAP: {self.interface} does not support AP mode')
+            return False
+
+        self._write_hostapd_conf()
+
+        if not self._configure_interface():
+            return False
+
+        if not self._start_hostapd():
+            self._cleanup_interface()
+            return False
+
+        if not self._start_dhcp():
+            self._stop_hostapd()
+            self._cleanup_interface()
+            return False
+
+        if upstream_interface:
+            if not self._setup_nat(upstream_interface):
+                logger.warning('HostAP: NAT failed, AP running without internet')
+
+        self.is_active = True
+        logger.info(f'HostAP: active on {self.interface} (SSID: {self.ssid})')
+        return True
+
+    def stop(self):
+        """Stop HostAP and clean up all resources."""
+        logger.info('HostAP: stopping...')
+        self._cleanup_nat()
+        self._stop_dhcp()
+        self._stop_hostapd()
+        self._cleanup_interface()
+        # Clean up config file
+        try:
+            os.remove(self.CONF_PATH)
+        except OSError:
+            pass
+        self.is_active = False
+        logger.info('HostAP: stopped')
+
+    def get_client_count(self) -> int:
+        """Count connected stations via hostapd_cli."""
+        try:
+            result = subprocess.run(
+                ['hostapd_cli', '-i', self.interface, 'all_sta'],
+                capture_output=True, text=True, timeout=3,
+            )
+            if result.returncode != 0:
+                return 0
+            # Each station block starts with a MAC address line
+            count = 0
+            for line in result.stdout.splitlines():
+                line = line.strip()
+                if len(line) == 17 and line.count(':') == 5:
+                    count += 1
+            return count
+        except Exception:
+            return 0
+
+    def get_status(self) -> dict:
+        return {
+            'is_active': self.is_active,
+            'interface': self.interface,
+            'ssid': self.ssid,
+            'security': self.security,
+            'channel': self.channel,
+            'upstream_interface': self._upstream_interface,
+            'client_count': self.get_client_count() if self.is_active else 0,
+        }
+
+
 class WifiCard:
     def __init__(self, interface_name: str, mac_manager: MacManager = None):
         """Initialize a wifi card with the given interface name"""
@@ -1364,6 +1759,7 @@ class WifiCardManager:
         self._lock = threading.Lock()
         self.initialization_errors: list[str] = []
         self._scanning_card: Optional[WifiCard] = None
+        self._hostap_card: Optional[WifiCard] = None
 
         # Initialize MongoDB-backed stores
         config = get_config()
@@ -1502,6 +1898,8 @@ class WifiCardManager:
                 for card in self.cards:
                     if card == self._scanning_card:
                         continue
+                    if card == self._hostap_card:
+                        continue
                     if not card.in_use:
                         if self.lease_store.acquire(
                             card.interface, holder, role='connection'
@@ -1565,7 +1963,8 @@ class WifiCardManager:
             List of WifiCards available for connections
         """
         with self._lock:
-            return [card for card in self.cards if card != self._scanning_card]
+            return [card for card in self.cards
+                    if card != self._scanning_card and card != self._hostap_card]
 
     def get_status(self) -> dict:
         """Get status information about WiFi cards."""
@@ -1577,9 +1976,37 @@ class WifiCardManager:
                 'card_interfaces': [c.interface for c in self.cards],
                 'initialization_errors': self.initialization_errors,
                 'scanning_card': self._scanning_card.interface if self._scanning_card else None,
-                'connection_cards': [c.interface for c in self.cards if c != self._scanning_card],
+                'hostap_card': self._hostap_card.interface if self._hostap_card else None,
+                'connection_cards': [c.interface for c in self.cards
+                                     if c != self._scanning_card and c != self._hostap_card],
                 'active_leases': self.lease_store.get_all_leases(),
             }
+
+    def set_hostap_card(self, interface: str) -> Optional[WifiCard]:
+        """Reserve a card for HostAP use. Returns the card or None."""
+        with self._lock:
+            for card in self.cards:
+                if card.interface == interface:
+                    if card == self._scanning_card:
+                        return None
+                    if card.in_use:
+                        return None
+                    card.in_use = True
+                    self._hostap_card = card
+                    card.current_task = {'module': 'HostAP', 'ssid': '', 'started_at': time.time()}
+                    return card
+            return None
+
+    def clear_hostap_card(self) -> Optional[WifiCard]:
+        """Return the hostap card to the pool."""
+        with self._lock:
+            if self._hostap_card:
+                self._hostap_card.in_use = False
+                self._hostap_card.current_task = None
+                card = self._hostap_card
+                self._hostap_card = None
+                return card
+            return None
 
 
 class ProbeHistory:
@@ -2365,6 +2792,7 @@ class WifiManager:
         )
 
         self.modules = self._load_connection_modules()
+        self.disabled_modules: set[str] = self._load_disabled_modules()
         self.suitable_connections: list[ConnectionResult] = []
         self.nearby_networks: list[WifiNetwork] = []
         self.metrics_store = PerformanceMetricsStore(
@@ -2419,6 +2847,7 @@ class WifiManager:
             'auto_selection_running': False,
         }
         self.active_bridge = None
+        self.hostap: Optional[HostAP] = None
 
         # Register callback to track reconnection events
         self.connection_monitor.on_reconnect(self._on_reconnect)
@@ -2477,6 +2906,55 @@ class WifiManager:
         modules.sort(key=lambda m: getattr(m, 'priority', 50))
         return modules
 
+    def _load_disabled_modules(self) -> set[str]:
+        """Load set of disabled module names from MongoDB."""
+        try:
+            config = get_config()
+            client = MongoClient(
+                config.database.mongodb_uri, serverSelectionTimeoutMS=2000
+            )
+            db = client[config.database.db_name]
+            doc = db['module_state'].find_one({'_id': 'disabled_modules'})
+            if doc and 'modules' in doc:
+                return set(doc['modules'])
+        except Exception:
+            pass
+        return set()
+
+    def _save_disabled_modules(self):
+        """Persist disabled module set to MongoDB."""
+        try:
+            config = get_config()
+            client = MongoClient(
+                config.database.mongodb_uri, serverSelectionTimeoutMS=2000
+            )
+            db = client[config.database.db_name]
+            db['module_state'].update_one(
+                {'_id': 'disabled_modules'},
+                {'$set': {'modules': list(self.disabled_modules)}},
+                upsert=True,
+            )
+        except Exception as e:
+            logger.error(f'Failed to save disabled modules: {e}')
+
+    def set_module_enabled(self, module_name: str, enabled: bool) -> bool:
+        """Enable or disable a module by name. Returns True on success."""
+        # Verify module exists
+        if not any(
+            getattr(m, 'name', m.__class__.__name__) == module_name
+            for m in self.modules
+        ):
+            return False
+        if enabled:
+            self.disabled_modules.discard(module_name)
+        else:
+            self.disabled_modules.add(module_name)
+        self._save_disabled_modules()
+        return True
+
+    def is_module_enabled(self, module_name: str) -> bool:
+        return module_name not in self.disabled_modules
+
     def use_connection(self, connection_index: int) -> bool:
         if connection_index >= len(self.suitable_connections):
             return False
@@ -2509,6 +2987,9 @@ class WifiManager:
                 'ethernet_interface': ethernet_interfaces[0],
                 'ssid': connection.network.ssid,
             }
+            # Update HostAP NAT upstream if running
+            if self.hostap and self.hostap.is_active:
+                self.hostap.update_upstream(connection.interface)
             return True
 
         return False
@@ -2517,6 +2998,96 @@ class WifiManager:
         if self.active_bridge:
             self.active_bridge.stop()
             self.status['current_bridge'] = None
+
+    # ------------------------------------------------------------------
+    # HostAP management
+    # ------------------------------------------------------------------
+
+    def start_hostap(self, conf: dict) -> dict:
+        """Start the host access point."""
+        if self.hostap and self.hostap.is_active:
+            return {'success': False, 'error': 'HostAP already running'}
+
+        if not HostAP.check_hostapd_installed():
+            return {'success': False, 'error': 'hostapd is not installed'}
+
+        interface = conf.get('interface')
+        if not interface:
+            conn_cards = self.card_manager.get_connection_cards()
+            if not conn_cards:
+                return {'success': False, 'error': 'No cards available for HostAP'}
+            interface = conn_cards[-1].interface
+
+        card = self.card_manager.set_hostap_card(interface)
+        if not card:
+            return {'success': False, 'error': f'Cannot reserve {interface} (busy or scanning card)'}
+
+        # Determine upstream: use active bridge's wifi interface
+        upstream = None
+        if self.active_bridge and self.active_bridge.is_active:
+            upstream = self.active_bridge.wifi_interface
+
+        self.hostap = HostAP(
+            interface=interface,
+            ssid=conf.get('ssid', 'Vasili-AP'),
+            security=conf.get('security', 'wpa2'),
+            password=conf.get('password', ''),
+            channel=conf.get('channel', 6),
+        )
+
+        if self.hostap.start(upstream_interface=upstream):
+            self.status['hostap_active'] = True
+            self.status['hostap_ssid'] = self.hostap.ssid
+            self._save_hostap_config(conf)
+            return {'success': True, 'interface': interface}
+        else:
+            self.card_manager.clear_hostap_card()
+            self.hostap = None
+            return {'success': False, 'error': 'hostapd failed to start (check AP support and logs)'}
+
+    def stop_hostap(self) -> dict:
+        if not self.hostap or not self.hostap.is_active:
+            return {'success': False, 'error': 'HostAP not running'}
+        self.hostap.stop()
+        self.card_manager.clear_hostap_card()
+        self.hostap = None
+        self.status['hostap_active'] = False
+        self.status['hostap_ssid'] = None
+        return {'success': True}
+
+    def get_hostap_status(self) -> dict:
+        if self.hostap and self.hostap.is_active:
+            return self.hostap.get_status()
+        return {'is_active': False}
+
+    def _load_hostap_config(self) -> dict:
+        """Load saved HostAP config from MongoDB."""
+        try:
+            config = get_config()
+            client = MongoClient(
+                config.database.mongodb_uri, serverSelectionTimeoutMS=2000
+            )
+            mdb = client[config.database.db_name]
+            doc = mdb['hostap_config'].find_one({'_id': 'hostap'})
+            return doc.get('config', {}) if doc else {}
+        except Exception:
+            return {}
+
+    def _save_hostap_config(self, conf: dict):
+        """Save HostAP config to MongoDB."""
+        try:
+            config = get_config()
+            client = MongoClient(
+                config.database.mongodb_uri, serverSelectionTimeoutMS=2000
+            )
+            mdb = client[config.database.db_name]
+            mdb['hostap_config'].update_one(
+                {'_id': 'hostap'},
+                {'$set': {'config': conf}},
+                upsert=True,
+            )
+        except Exception as e:
+            logger.error(f'Failed to save hostap config: {e}')
 
     def _on_reconnect(self, card: WifiCard, success: bool):
         """Callback invoked when reconnection is attempted."""
@@ -2708,7 +3279,7 @@ class WifiManager:
                     mac=used_mac or '',
                     reason='connection_failed',
                 )
-                store_connection_history(network, False)
+                store_connection_history(network, False, failure_reason='connection_failed')
                 return None
 
         except Exception as e:
@@ -2718,6 +3289,7 @@ class WifiManager:
                 ssid=network.ssid, module=module_name,
                 reason=str(e)[:100],
             )
+            store_connection_history(network, False, failure_reason=str(e)[:100])
             return None
 
     def _handle_successful_connection(self, network: WifiNetwork,
@@ -2802,6 +3374,9 @@ class WifiManager:
                     if network.bssid in connected_bssids:
                         continue
                     for module in self.modules:
+                        mod_name = getattr(module, 'name', module.__class__.__name__)
+                        if not self.is_module_enabled(mod_name):
+                            continue
                         # Hidden networks (empty SSID) must only go to
                         # HiddenNetworkModule — skip all other modules
                         if not network.ssid:
@@ -2900,7 +3475,8 @@ def _init_app():
 
 
 def store_connection_history(
-    network: WifiNetwork, success: bool, speed_test: dict = None, interface: str = None
+    network: WifiNetwork, success: bool, speed_test: dict = None,
+    interface: str = None, failure_reason: str = None,
 ):
     """Store connection attempt in MongoDB history."""
     if history_collection is None:
@@ -2918,6 +3494,9 @@ def store_connection_history(
             'interface': interface,
             'uncloaked': getattr(network, 'uncloaked', False),
         }
+
+        if failure_reason:
+            history_entry['failure_reason'] = failure_reason
 
         if speed_test:
             history_entry['download_speed'] = speed_test.get('download', 0)
@@ -3046,7 +3625,11 @@ def get_cards():
             'interface': card.interface,
             'in_use': card.in_use,
             'is_up': card._is_interface_up(),
-            'role': 'scanning' if card == wifi_manager.card_manager.get_scanning_card() else 'connection',
+            'role': (
+                'hostap' if card == wifi_manager.card_manager._hostap_card
+                else 'scanning' if card == wifi_manager.card_manager.get_scanning_card()
+                else 'connection'
+            ),
             'mode': card.current_mode,
             'connected_network': None,
             'ip_address': card.get_ip_address(),
@@ -3069,6 +3652,8 @@ def get_cards():
         if routing:
             card_info['gateway'] = routing.get('gateway')
             card_info['routing_table'] = routing.get('table')
+        if card == wifi_manager.card_manager._hostap_card and wifi_manager.hostap:
+            card_info['hostap_info'] = wifi_manager.hostap.get_status()
         cards.append(card_info)
     return jsonify(cards)
 
@@ -3112,6 +3697,7 @@ def get_modules():
             'name': name,
             'class': mod.__class__.__name__,
             'priority': getattr(mod, 'priority', 50),
+            'enabled': wifi_manager.is_module_enabled(name),
             'requires_consent': needs_consent,
             'consent_mode': wifi_manager.consent_manager.get_mode(name) if needs_consent else None,
             'config_schema': schema,
@@ -3136,6 +3722,18 @@ def set_module_config(name):
         return jsonify({'error': 'No data provided'}), 400
     success = wifi_manager.module_config.set_config_bulk(name, data)
     return jsonify({'success': success})
+
+
+@app.route('/api/modules/<name>/enabled', methods=['PUT'])
+def set_module_enabled(name):
+    """Enable or disable a module at runtime."""
+    data = request.get_json()
+    if data is None or 'enabled' not in data:
+        return jsonify({'error': 'enabled field required'}), 400
+    success = wifi_manager.set_module_enabled(name, bool(data['enabled']))
+    if not success:
+        return jsonify({'error': 'Module not found'}), 404
+    return jsonify({'success': True, 'name': name, 'enabled': data['enabled']})
 
 
 @app.route('/api/modules/<name>/consent', methods=['POST'])
@@ -3185,6 +3783,45 @@ def get_approved_ssids(name):
 @app.route('/api/modules/consent')
 def get_all_consent():
     return jsonify(wifi_manager.consent_manager.get_all())
+
+
+@app.route('/api/hostap/status')
+def get_hostap_status():
+    """Get HostAP status."""
+    return jsonify(wifi_manager.get_hostap_status())
+
+
+@app.route('/api/hostap/config', methods=['GET'])
+def get_hostap_config():
+    """Get saved HostAP configuration."""
+    return jsonify(wifi_manager._load_hostap_config())
+
+
+@app.route('/api/hostap/config', methods=['PUT'])
+def save_hostap_config():
+    """Save HostAP configuration."""
+    data = request.get_json()
+    if not data:
+        return jsonify({'error': 'No data'}), 400
+    wifi_manager._save_hostap_config(data)
+    return jsonify({'success': True})
+
+
+@app.route('/api/hostap/start', methods=['POST'])
+def start_hostap():
+    """Start the host access point."""
+    data = request.get_json() or {}
+    result = wifi_manager.start_hostap(data)
+    emit_status_update()
+    return jsonify(result)
+
+
+@app.route('/api/hostap/stop', methods=['POST'])
+def stop_hostap():
+    """Stop the host access point."""
+    result = wifi_manager.stop_hostap()
+    emit_status_update()
+    return jsonify(result)
 
 
 @app.route('/api/use_connection/<int:index>', methods=['POST'])
