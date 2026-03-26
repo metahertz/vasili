@@ -235,6 +235,17 @@ class StageResult:
     stop_pipeline: bool = False  # True = abort pipeline (e.g. no WiFi association)
 
 
+@dataclass
+class StrategyResult:
+    """Outcome of a parallel strategy, optionally enriched with speedtest data."""
+    stage_name: str
+    stage_result: StageResult
+    context_updates: dict
+    download_speed: float = 0.0
+    upload_speed: float = 0.0
+    ping: float = 0.0
+
+
 class PerformanceMetricsStore:
     """
     Store and retrieve WiFi connection performance metrics in MongoDB.
@@ -1760,6 +1771,7 @@ class WifiCardManager:
         self.initialization_errors: list[str] = []
         self._scanning_card: Optional[WifiCard] = None
         self._hostap_card: Optional[WifiCard] = None
+        self._on_card_returned_callbacks: list = []
 
         # Initialize MongoDB-backed stores
         config = get_config()
@@ -1913,8 +1925,18 @@ class WifiCardManager:
         """Alias for lease_card() for backwards compatibility with modules."""
         return self.lease_card()
 
+    def on_card_returned(self, callback):
+        """Register a callback invoked after a card is returned to the pool.
+
+        The callback receives the returned WifiCard as its sole argument and
+        runs *outside* the card-manager lock so it may safely call
+        ``set_hostap_card`` or ``lease_card``.
+        """
+        self._on_card_returned_callbacks.append(callback)
+
     def return_card(self, card: WifiCard, holder: str = 'vasili'):
         """Return a card to the pool of available cards."""
+        returned_card = None
         with self._lock:
             if card in self.cards:
                 # Defensive: clean up routing isolation if still active
@@ -1929,6 +1951,15 @@ class WifiCardManager:
                 card.in_use = False
                 card.current_task = None
                 self.lease_store.release(card.interface, holder)
+                returned_card = card
+
+        # Fire callbacks outside the lock
+        if returned_card:
+            for cb in self._on_card_returned_callbacks:
+                try:
+                    cb(returned_card)
+                except Exception as e:
+                    logger.error(f'Card-returned callback error: {e}')
 
     def get_all_cards(self) -> list[WifiCard]:
         """Get list of all wifi cards."""
@@ -1997,16 +2028,37 @@ class WifiCardManager:
                     return card
             return None
 
-    def clear_hostap_card(self) -> Optional[WifiCard]:
-        """Return the hostap card to the pool."""
+    def clear_hostap_card(self, fire_callbacks: bool = True) -> Optional[WifiCard]:
+        """Return the hostap card to the pool.
+
+        Re-hands the interface to NetworkManager (managed mode) and
+        optionally fires card-returned callbacks.
+
+        Args:
+            fire_callbacks: If False, skip card-returned callbacks.
+                This prevents infinite retry loops when ``start_hostap``
+                fails and ``clear_hostap_card`` is called from within
+                the same callback chain.
+        """
+        card = None
         with self._lock:
             if self._hostap_card:
+                # Bring the card back under NM control
+                self._hostap_card.ensure_managed()
                 self._hostap_card.in_use = False
                 self._hostap_card.current_task = None
                 card = self._hostap_card
                 self._hostap_card = None
-                return card
-            return None
+
+        # Fire callbacks outside the lock (same as return_card)
+        if card and fire_callbacks:
+            for cb in self._on_card_returned_callbacks:
+                try:
+                    cb(card)
+                except Exception as e:
+                    logger.error(f'Card-returned callback error: {e}')
+
+        return card
 
 
 class ProbeHistory:
@@ -2530,15 +2582,17 @@ class ConnectionModule:
     def connect(self, network: WifiNetwork) -> ConnectionResult:
         raise NotImplementedError()
 
-    def run_speedtest(self, card) -> tuple[float, float, float]:
-        """Run a speedtest bound to the card's interface IP.
+    def run_speedtest(self, card, interface_override=None) -> tuple[float, float, float]:
+        """Run a speedtest bound to the card's (or tunnel's) interface IP.
 
-        Verifies actual internet connectivity through the WiFi interface
+        Verifies actual internet connectivity through the interface
         before running the speedtest, preventing false results from
         traffic routing through other interfaces (e.g. eth0).
 
         Args:
             card: WifiCard that is connected to a network
+            interface_override: Use this interface instead of card.interface
+                (e.g. a tunnel interface like dns0)
 
         Returns:
             Tuple of (download_mbps, upload_mbps, ping_ms)
@@ -2546,16 +2600,17 @@ class ConnectionModule:
         Raises:
             ConnectionError: If no IP or no internet on the interface
         """
-        wifi_ip = card.get_ip_address()
-        if not wifi_ip:
-            raise ConnectionError(f'No IP address on {card.interface}')
+        interface = interface_override or card.interface
+        ip = network_isolation.get_interface_ip(interface)
+        if not ip:
+            raise ConnectionError(f'No IP address on {interface}')
 
-        if not network_isolation.verify_connectivity(card.interface):
+        if not network_isolation.verify_connectivity(interface):
             raise ConnectionError(
-                f'No internet connectivity via {card.interface}'
+                f'No internet connectivity via {interface}'
             )
 
-        st = speedtest.Speedtest(source_address=wifi_ip)
+        st = speedtest.Speedtest(source_address=ip)
         st.get_best_server()
         download = st.download() / 1_000_000
         upload = st.upload() / 1_000_000
@@ -2589,13 +2644,15 @@ class PipelineStage:
 
 
 class PipelineModule(ConnectionModule):
-    """Orchestrates a pipeline of stages for a network type.
+    """Orchestrates a pipeline of phases for a network type.
 
-    The pipeline connects to a network once, then runs stages sequentially.
-    Each stage can check/modify the context dict. If a stage achieves
-    internet connectivity (has_internet=True), the pipeline runs a speedtest
-    and returns success. If all stages exhaust without internet, the card
-    is disconnected and failure is returned.
+    Each phase is either a single ``PipelineStage`` (runs sequentially) or
+    a **list** of stages (runs in parallel — best result wins).  This lets
+    discovery stages build context sequentially while exploitation strategies
+    (e.g. captive-portal bypass vs DNS tunnel) race against each other.
+
+    Backward compatible: passing ``stages=[...]`` wraps each stage as a
+    sequential phase.
     """
     priority = 10  # Pipelines run before simple modules
 
@@ -2604,11 +2661,27 @@ class PipelineModule(ConnectionModule):
     auto_connect = True
 
     def __init__(self, card_manager, stages: list[PipelineStage] = None,
+                 phases: list = None,
                  consent_manager=None, module_config=None, **kwargs):
         super().__init__(card_manager, module_config=module_config)
-        self.stages = stages or []
+        if phases is not None:
+            self.phases = phases
+        else:
+            self.phases = list(stages or [])
+        # Flat list of all stages for API introspection (/api/modules)
+        self.stages = self._flatten_phases(self.phases)
         self.consent_manager = consent_manager
-        self.last_stage_log: list[dict] = []  # Stage results from last connect()
+        self.last_stage_log: list[dict] = []
+
+    @staticmethod
+    def _flatten_phases(phases: list) -> list[PipelineStage]:
+        flat = []
+        for phase in phases:
+            if isinstance(phase, list):
+                flat.extend(phase)
+            else:
+                flat.append(phase)
+        return flat
 
     def _has_consent(self, stage_name: str, network: WifiNetwork = None) -> bool:
         if self.consent_manager:
@@ -2623,6 +2696,182 @@ class PipelineModule(ConnectionModule):
         Override in subclasses to inject data like password lists.
         """
         return {}
+
+    @staticmethod
+    def _teardown_tunnel(context: dict):
+        """Tear down any active tunnel stored in the pipeline context."""
+        helper = context.get('_tunnel_helper')
+        if helper is None:
+            return
+        try:
+            helper.teardown()
+        except Exception as exc:
+            logger.warning(f'Tunnel teardown error: {exc}')
+
+    # ------------------------------------------------------------------
+    # Stage execution helpers
+    # ------------------------------------------------------------------
+
+    def _is_stage_eligible(self, stage: PipelineStage,
+                           network: WifiNetwork, card, context: dict) -> bool:
+        """Check consent and can_run; log skips. Returns True if stage should run."""
+        if stage.requires_consent and not self._has_consent(stage.name, network):
+            self.last_stage_log.append({
+                'stage': stage.name, 'status': 'skipped',
+                'reason': 'no_consent', 'timestamp': time.time(),
+            })
+            return False
+        try:
+            if not stage.can_run(network, card, context):
+                self.last_stage_log.append({
+                    'stage': stage.name, 'status': 'skipped',
+                    'reason': 'can_run=False', 'timestamp': time.time(),
+                })
+                return False
+        except Exception:
+            return False
+        return True
+
+    def _run_single_stage(self, stage: PipelineStage,
+                          network: WifiNetwork, card,
+                          context: dict) -> Optional[StageResult]:
+        """Run one stage sequentially. Returns None if skipped."""
+        if not self._is_stage_eligible(stage, network, card, context):
+            return None
+
+        try:
+            logger.info(f'Pipeline stage: {stage.name} on {network.ssid}')
+            t0 = time.time()
+            result = stage.run(network, card, context)
+            elapsed = round(time.time() - t0, 2)
+            context.update(result.context_updates)
+
+            self.last_stage_log.append({
+                'stage': stage.name,
+                'status': (
+                    'internet' if result.has_internet else
+                    'stopped' if result.stop_pipeline else
+                    'success' if result.success else 'failed'
+                ),
+                'message': result.message,
+                'duration': elapsed,
+                'context': dict(result.context_updates),
+                'timestamp': time.time(),
+            })
+            return result
+
+        except Exception as e:
+            logger.error(f'Stage {stage.name} error: {e}')
+            self.last_stage_log.append({
+                'stage': stage.name, 'status': 'error',
+                'message': str(e)[:200], 'timestamp': time.time(),
+            })
+            return None
+
+    def _run_parallel_phase(self, stages: list[PipelineStage],
+                            network: WifiNetwork, card,
+                            context: dict) -> Optional[StrategyResult]:
+        """Run multiple stages in parallel. Returns best StrategyResult or None."""
+        eligible = [s for s in stages
+                    if self._is_stage_eligible(s, network, card, context)]
+        if not eligible:
+            return None
+
+        ctx_snapshot = context.copy()
+        results: list[tuple[PipelineStage, StageResult]] = []
+
+        logger.info(
+            'Parallel phase: running %s on %s',
+            [s.name for s in eligible], network.ssid,
+        )
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=len(eligible)) as pool:
+            futs = {
+                pool.submit(s.run, network, card, ctx_snapshot.copy()): s
+                for s in eligible
+            }
+            for fut in concurrent.futures.as_completed(futs):
+                stage = futs[fut]
+                t0 = time.time()
+                try:
+                    result = fut.result()
+                    results.append((stage, result))
+                    self.last_stage_log.append({
+                        'stage': stage.name,
+                        'status': 'internet' if result.has_internet else
+                                  'success' if result.success else 'failed',
+                        'message': result.message,
+                        'context': dict(result.context_updates),
+                        'parallel': True,
+                        'timestamp': time.time(),
+                    })
+                except Exception as e:
+                    logger.error(f'Parallel stage {stage.name} error: {e}')
+                    self.last_stage_log.append({
+                        'stage': stage.name, 'status': 'error',
+                        'message': str(e)[:200], 'parallel': True,
+                        'timestamp': time.time(),
+                    })
+
+        winners = [(s, r) for s, r in results if r.has_internet]
+
+        if not winners:
+            # No internet — merge discovery context from all results
+            for _, r in results:
+                context.update(r.context_updates)
+            return None
+
+        # Single winner — tear down losers, return immediately
+        if len(winners) == 1:
+            best_s, best_r = winners[0]
+            for s, r in results:
+                if r is not best_r:
+                    self._teardown_tunnel(r.context_updates)
+            context.update(best_r.context_updates)
+            return StrategyResult(
+                stage_name=best_s.name,
+                stage_result=best_r,
+                context_updates=best_r.context_updates,
+            )
+
+        # Multiple winners — speedtest each to pick best
+        logger.info('Multiple strategies succeeded — comparing speeds')
+        candidates: list[StrategyResult] = []
+        for stage, result in winners:
+            tunnel_iface = result.context_updates.get('tunnel_interface')
+            try:
+                dl, ul, pg = self.run_speedtest(
+                    card, interface_override=tunnel_iface,
+                )
+            except Exception:
+                dl, ul, pg = 0.0, 0.0, 999.0
+            candidates.append(StrategyResult(
+                stage_name=stage.name,
+                stage_result=result,
+                context_updates=result.context_updates,
+                download_speed=dl, upload_speed=ul, ping=pg,
+            ))
+
+        candidates.sort(key=lambda c: c.download_speed, reverse=True)
+        best = candidates[0]
+        logger.info(
+            'Best strategy: %s (%.1f Mbps)',
+            best.stage_name, best.download_speed,
+        )
+
+        # Tear down losing strategies and non-winners
+        for c in candidates[1:]:
+            self._teardown_tunnel(c.context_updates)
+        for s, r in results:
+            if not r.has_internet:
+                self._teardown_tunnel(r.context_updates)
+
+        context.update(best.context_updates)
+        return best
+
+    # ------------------------------------------------------------------
+    # Main connect orchestrator
+    # ------------------------------------------------------------------
 
     def connect(self, network: WifiNetwork) -> ConnectionResult:
         card = self.card_manager.get_card()
@@ -2645,87 +2894,64 @@ class PipelineModule(ConnectionModule):
                     interface=card.interface,
                 )
 
-        # Run stages sequentially
         context: dict = self._get_connect_context()
         if self.auto_connect:
             context['wifi_associated'] = True
         successful_stage = None
+        pre_tested = None  # (dl, ul, ping) if parallel phase already ran speedtest
         self.last_stage_log = []
 
-        for stage in self.stages:
-            if stage.requires_consent and not self._has_consent(stage.name, network):
-                self.last_stage_log.append({
-                    'stage': stage.name,
-                    'status': 'skipped',
-                    'reason': 'no_consent',
-                    'timestamp': time.time(),
-                })
-                continue
-
-            try:
-                if not stage.can_run(network, card, context):
-                    self.last_stage_log.append({
-                        'stage': stage.name,
-                        'status': 'skipped',
-                        'reason': 'can_run=False',
-                        'timestamp': time.time(),
-                    })
+        for phase in self.phases:
+            if isinstance(phase, list):
+                # --- Parallel strategy group ---
+                winner = self._run_parallel_phase(phase, network, card, context)
+                if winner:
+                    successful_stage = winner.stage_name
+                    if winner.download_speed > 0:
+                        pre_tested = (winner.download_speed,
+                                      winner.upload_speed,
+                                      winner.ping)
+                    break
+            else:
+                # --- Sequential stage ---
+                result = self._run_single_stage(phase, network, card, context)
+                if result is None:
                     continue
-
-                logger.info(f'Pipeline stage: {stage.name} on {network.ssid}')
-                t0 = time.time()
-                result = stage.run(network, card, context)
-                elapsed = round(time.time() - t0, 2)
-                context.update(result.context_updates)
-
-                stage_entry = {
-                    'stage': stage.name,
-                    'status': (
-                        'internet' if result.has_internet else
-                        'stopped' if result.stop_pipeline else
-                        'success' if result.success else 'failed'
-                    ),
-                    'message': result.message,
-                    'duration': elapsed,
-                    'context': dict(result.context_updates),
-                    'timestamp': time.time(),
-                }
-                self.last_stage_log.append(stage_entry)
-
                 if result.stop_pipeline:
                     logger.info(
-                        f'Stage {stage.name} stopped pipeline: {result.message}'
+                        f'Stage {phase.name} stopped pipeline: {result.message}'
                     )
                     break
-
                 if result.has_internet:
                     logger.info(
-                        f'Stage {stage.name} achieved internet on {network.ssid}'
+                        f'Stage {phase.name} achieved internet on {network.ssid}'
                     )
-                    successful_stage = stage.name
+                    successful_stage = phase.name
                     break
 
-            except Exception as e:
-                logger.error(f'Stage {stage.name} error: {e}')
-                self.last_stage_log.append({
-                    'stage': stage.name,
-                    'status': 'error',
-                    'message': str(e)[:200],
-                    'timestamp': time.time(),
-                })
-                continue
-
         if successful_stage:
-            try:
-                dl, ul, ping = self.run_speedtest(card)
+            if pre_tested:
+                dl, ul, ping = pre_tested
+            else:
+                try:
+                    tunnel_iface = context.get('tunnel_interface')
+                    dl, ul, ping = self.run_speedtest(
+                        card, interface_override=tunnel_iface,
+                    )
+                except Exception as e:
+                    logger.warning(f'Speedtest failed after pipeline success: {e}')
+                    dl = ul = ping = 0
+
+            if dl > 0 or ul > 0:
                 return ConnectionResult(
                     network=network, download_speed=dl, upload_speed=ul,
                     ping=ping, connected=True,
                     connection_method=f'pipeline:{successful_stage}',
                     interface=card.interface,
                 )
-            except Exception as e:
-                logger.warning(f'Speedtest failed after pipeline success: {e}')
+
+        # Tear down any active tunnel before disconnecting
+        self._teardown_tunnel(context)
 
         # All stages exhausted — no internet achieved
         card.disconnect()
@@ -2848,9 +3074,14 @@ class WifiManager:
         }
         self.active_bridge = None
         self.hostap: Optional[HostAP] = None
+        self._hostap_lazy_pending = False  # True when AP is confirmed but waiting for card
+        self._hostap_claiming = False  # Re-entrancy guard for card-returned callback
 
         # Register callback to track reconnection events
         self.connection_monitor.on_reconnect(self._on_reconnect)
+
+        # Register card-return hook for lazy hostap
+        self.card_manager.on_card_returned(self._on_card_returned_for_hostap)
 
     def _load_connection_modules(self) -> list[ConnectionModule]:
         config = get_config()
@@ -3038,10 +3269,14 @@ class WifiManager:
         if self.hostap.start(upstream_interface=upstream):
             self.status['hostap_active'] = True
             self.status['hostap_ssid'] = self.hostap.ssid
+            self._hostap_lazy_pending = False
             self._save_hostap_config(conf)
             return {'success': True, 'interface': interface}
         else:
-            self.card_manager.clear_hostap_card()
+            # fire_callbacks=False prevents clear_hostap_card from
+            # triggering _on_card_returned_for_hostap which would
+            # immediately re-seize the card in an infinite loop.
+            self.card_manager.clear_hostap_card(fire_callbacks=False)
             self.hostap = None
             return {'success': False, 'error': 'hostapd failed to start (check AP support and logs)'}
 
@@ -3049,16 +3284,34 @@ class WifiManager:
         if not self.hostap or not self.hostap.is_active:
             return {'success': False, 'error': 'HostAP not running'}
         self.hostap.stop()
-        self.card_manager.clear_hostap_card()
         self.hostap = None
         self.status['hostap_active'] = False
         self.status['hostap_ssid'] = None
+
+        # Set lazy pending *before* clear_hostap_card so the card-returned
+        # callback can immediately re-acquire it if lazy is enabled.
+        saved = self._load_hostap_config()
+        if saved.get('enabled'):
+            self._hostap_lazy_pending = True
+            logger.info('HostAP stopped but lazy-enabled — will restart when card is free')
+
+        # This fires card-returned callbacks (including lazy hostap pickup)
+        self.card_manager.clear_hostap_card()
+
         return {'success': True}
 
     def get_hostap_status(self) -> dict:
         if self.hostap and self.hostap.is_active:
-            return self.hostap.get_status()
-        return {'is_active': False}
+            status = self.hostap.get_status()
+            status['lazy_enabled'] = True  # Must be enabled if running
+            status['lazy_pending'] = False
+            return status
+        saved = self._load_hostap_config()
+        return {
+            'is_active': False,
+            'lazy_enabled': bool(saved.get('enabled')),
+            'lazy_pending': self._hostap_lazy_pending,
+        }
 
     def _load_hostap_config(self) -> dict:
         """Load saved HostAP config from MongoDB."""
@@ -3088,6 +3341,112 @@ class WifiManager:
             )
         except Exception as e:
             logger.error(f'Failed to save hostap config: {e}')
+
+    # ------------------------------------------------------------------
+    # Lazy HostAP — confirm once, start when card is free / on reboot
+    # ------------------------------------------------------------------
+
+    def confirm_hostap(self, conf: dict) -> dict:
+        """Confirm (enable) hostap config for lazy startup.
+
+        Saves the config with ``enabled: true`` so the AP will start
+        automatically when the chosen card is free and on every reboot.
+        If the card is available right now the AP starts immediately.
+        """
+        conf['enabled'] = True
+        self._save_hostap_config(conf)
+
+        # Already running?
+        if self.hostap and self.hostap.is_active:
+            return {'success': True, 'state': 'running'}
+
+        # Try to start right now
+        result = self.start_hostap(conf)
+        if result.get('success'):
+            return {'success': True, 'state': 'running'}
+
+        # Card is busy — queue lazy start
+        self._hostap_lazy_pending = True
+        logger.info(
+            'HostAP confirmed but card unavailable — will start lazily '
+            'when %s is free', conf.get('interface', 'any card')
+        )
+        return {'success': True, 'state': 'pending',
+                'message': 'AP will start when the card becomes available'}
+
+    def disable_hostap_lazy(self) -> dict:
+        """Disable lazy/auto hostap. Stops AP if running and clears enabled flag."""
+        # Stop if currently active
+        if self.hostap and self.hostap.is_active:
+            self.stop_hostap()
+
+        self._hostap_lazy_pending = False
+
+        # Clear enabled flag in saved config
+        saved = self._load_hostap_config()
+        if saved:
+            saved['enabled'] = False
+            self._save_hostap_config(saved)
+
+        logger.info('HostAP lazy/auto disabled')
+        return {'success': True}
+
+    def _on_card_returned_for_hostap(self, card: WifiCard):
+        """Card-return callback: try to claim the card for lazy hostap."""
+        if not self._hostap_lazy_pending:
+            return
+        # Guard against re-entrancy (start_hostap failure → clear → callback)
+        if getattr(self, '_hostap_claiming', False):
+            return
+        if self.hostap and self.hostap.is_active:
+            self._hostap_lazy_pending = False
+            return
+
+        saved = self._load_hostap_config()
+        if not saved or not saved.get('enabled'):
+            self._hostap_lazy_pending = False
+            return
+
+        wanted_iface = saved.get('interface')
+        # Only grab the specific card the user chose (or any if unset)
+        if wanted_iface and card.interface != wanted_iface:
+            return
+
+        self._hostap_claiming = True
+        try:
+            logger.info('Card %s now free — attempting lazy HostAP start',
+                        card.interface)
+            # Pass the specific returned card's interface so start_hostap
+            # doesn't grab a different card from the pool.
+            conf = dict(saved)
+            conf['interface'] = card.interface
+            result = self.start_hostap(conf)
+            if result.get('success'):
+                self._hostap_lazy_pending = False
+                logger.info('Lazy HostAP started on %s', card.interface)
+            else:
+                logger.debug('Lazy HostAP start failed on %s: %s',
+                             card.interface, result.get('error'))
+        finally:
+            self._hostap_claiming = False
+
+    def _boot_hostap_check(self):
+        """Called once at startup to auto-start AP from saved config."""
+        saved = self._load_hostap_config()
+        if not saved or not saved.get('enabled'):
+            return
+
+        logger.info('Saved HostAP config has enabled=true — attempting boot start')
+        result = self.start_hostap(saved)
+        if result.get('success'):
+            logger.info('HostAP auto-started on boot')
+        else:
+            # Card busy at boot (probably scanning) — queue lazy
+            self._hostap_lazy_pending = True
+            logger.info(
+                'HostAP card unavailable at boot — queued for lazy start: %s',
+                result.get('error'),
+            )
 
     def _on_reconnect(self, card: WifiCard, success: bool):
         """Callback invoked when reconnection is attempted."""
@@ -3473,6 +3832,9 @@ def _init_app():
     except Exception as e:
         logger.warning(f'MongoDB connection error: {e} - history features will be disabled')
 
+    # Auto-start HostAP if saved config has enabled=true
+    wifi_manager._boot_hostap_check()
+
 
 def store_connection_history(
     network: WifiNetwork, success: bool, speed_test: dict = None,
@@ -3512,6 +3874,13 @@ def store_connection_history(
 def emit_status_update():
     """Emit current status to all connected clients."""
     try:
+        # Recalculate cards_in_use so the status bar reflects current state
+        wifi_manager.status['cards_in_use'] = sum(
+            1 for card in wifi_manager.card_manager.get_all_cards() if card.in_use
+        )
+        wifi_manager.status['hostap_active'] = (
+            wifi_manager.hostap is not None and wifi_manager.hostap.is_active
+        )
         socketio.emit('status_update', wifi_manager.status)
     except Exception as e:
         logger.error(f'Failed to emit status update: {e}')
@@ -3683,7 +4052,7 @@ def get_modules():
         schema = schema_method() if schema_method else {}
         needs_consent = getattr(mod, 'requires_consent', False)
 
-        # For PipelineModules, include stage info
+        # For PipelineModules, include stage info (flat) and phase structure
         stages_info = []
         if hasattr(mod, 'stages'):
             for stage in mod.stages:
@@ -3692,6 +4061,16 @@ def get_modules():
                     'requires_consent': stage.requires_consent,
                     'config_schema': stage.get_config_schema(),
                 })
+
+        # Build phase structure: list of items, each is either
+        # a stage name (sequential) or a list of stage names (parallel)
+        phases_info = []
+        if hasattr(mod, 'phases'):
+            for phase in mod.phases:
+                if isinstance(phase, list):
+                    phases_info.append([s.name for s in phase])
+                else:
+                    phases_info.append(phase.name)
 
         modules.append({
             'name': name,
@@ -3703,6 +4082,7 @@ def get_modules():
             'config_schema': schema,
             'config_values': wifi_manager.module_config.get_config(name),
             'stages': stages_info,
+            'phases': phases_info,
         })
     return jsonify(modules)
 
@@ -3820,6 +4200,23 @@ def start_hostap():
 def stop_hostap():
     """Stop the host access point."""
     result = wifi_manager.stop_hostap()
+    emit_status_update()
+    return jsonify(result)
+
+
+@app.route('/api/hostap/confirm', methods=['POST'])
+def confirm_hostap():
+    """Confirm HostAP config for lazy/auto start."""
+    data = request.get_json() or {}
+    result = wifi_manager.confirm_hostap(data)
+    emit_status_update()
+    return jsonify(result)
+
+
+@app.route('/api/hostap/disable', methods=['POST'])
+def disable_hostap():
+    """Disable lazy/auto HostAP and stop if running."""
+    result = wifi_manager.disable_hostap_lazy()
     emit_status_update()
     return jsonify(result)
 
@@ -3983,6 +4380,72 @@ def clear_all_saved_networks():
     return jsonify({'status': 'cleared', 'count': count})
 
 
+@app.route('/api/probes')
+def get_probes():
+    """Get all cached probe history entries (BSSID→SSID mappings)."""
+    ph = wifi_manager.probe_history
+    if not ph:
+        return jsonify([])
+
+    # If MongoDB is available, return full docs with last_seen timestamps
+    if ph._available:
+        try:
+            docs = list(ph.collection.find(
+                {}, {'_id': 0, 'bssid': 1, 'ssid': 1, 'last_seen': 1}
+            ).sort('last_seen', -1))
+            return jsonify(docs)
+        except Exception:
+            pass
+
+    # Fallback: return from in-memory cache (no timestamps)
+    return jsonify([
+        {'bssid': b, 'ssid': s, 'last_seen': None}
+        for b, s in ph._cache.items()
+    ])
+
+
+@app.route('/api/probes/<path:bssid>', methods=['DELETE'])
+def delete_probe(bssid):
+    """Delete a single probe entry by BSSID."""
+    ph = wifi_manager.probe_history
+    if not ph:
+        return jsonify({'status': 'error', 'message': 'Probe history unavailable'}), 503
+
+    bssid_lower = bssid.lower()
+    removed = bssid_lower in ph._cache
+    ph._cache.pop(bssid_lower, None)
+
+    if ph._available:
+        try:
+            ph.collection.delete_one({'bssid': bssid_lower})
+        except Exception:
+            pass
+
+    if removed:
+        return jsonify({'status': 'deleted', 'bssid': bssid_lower})
+    return jsonify({'status': 'not_found', 'bssid': bssid_lower}), 404
+
+
+@app.route('/api/probes', methods=['DELETE'])
+def clear_probes():
+    """Clear all cached probe history."""
+    ph = wifi_manager.probe_history
+    if not ph:
+        return jsonify({'status': 'error', 'message': 'Probe history unavailable'}), 503
+
+    count = len(ph._cache)
+    ph._cache.clear()
+
+    if ph._available:
+        try:
+            result = ph.collection.delete_many({})
+            count = max(count, result.deleted_count)
+        except Exception:
+            pass
+
+    return jsonify({'status': 'cleared', 'count': count})
+
+
 @app.route('/api/mac_assignments', methods=['DELETE'])
 def clear_mac_assignments():
     """Clear all stored MAC-to-network mappings."""
@@ -3990,6 +4453,49 @@ def clear_mac_assignments():
         result = wifi_manager.card_manager.mac_manager.collection.delete_many({})
         wifi_manager.card_manager.mac_manager._cache.clear()
         return jsonify({'status': 'cleared', 'count': result.deleted_count})
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/api/wipe_data', methods=['DELETE'])
+def wipe_all_data():
+    """Drop all data/history collections but preserve app config.
+
+    Preserved (config): module_state, module_config, module_consent,
+                        ssid_consent, hostap_config
+    Wiped (data):       connection_metrics, connection_history, card_leases,
+                        probe_history, bandwidth, mac_assignments,
+                        known_networks, portal_patterns
+    """
+    if db is None:
+        return jsonify({'status': 'error', 'message': 'Database not available'}), 503
+
+    data_collections = [
+        'connection_metrics', 'connection_history', 'card_leases',
+        'probe_history', 'bandwidth', 'mac_assignments',
+        'known_networks', 'portal_patterns',
+    ]
+    total = 0
+    dropped = []
+    try:
+        for name in data_collections:
+            col = db[name]
+            result = col.delete_many({})
+            total += result.deleted_count
+            dropped.append(name)
+
+        # Clear in-memory caches that mirror wiped collections
+        if wifi_manager.probe_history:
+            wifi_manager.probe_history._cache.clear()
+        if hasattr(wifi_manager.card_manager, 'mac_manager'):
+            wifi_manager.card_manager.mac_manager._cache.clear()
+        wifi_manager.card_manager.lease_manager.clear_all()
+
+        return jsonify({
+            'status': 'cleared',
+            'collections': dropped,
+            'total_documents': total,
+        })
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)}), 500
 

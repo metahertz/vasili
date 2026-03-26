@@ -52,7 +52,7 @@
             display: flex; justify-content: space-between; align-items: center;
             margin-bottom: 10px;
         }
-        .mod-name { font-weight: bold; color: #58a6ff; font-size: 1.05em; }
+        .mod-name { font-weight: bold; color: #58a6ff; font-size: 1.05em; flex: 1; }
         .mod-meta { display: flex; gap: 8px; align-items: center; }
         .mod-desc { color: #8b949e; font-size: 0.9em; margin-bottom: 10px; }
 
@@ -92,6 +92,25 @@
         .stage-num { color: #484f58; width: 20px; text-align: center; }
         .stage-name { font-weight: bold; flex: 1; }
         .stage-consent { color: #d29922; font-size: 0.85em; }
+        .stage-mode { font-size: 0.75em; padding: 1px 5px; border-radius: 3px; }
+        .stage-mode-seq { background: #21262d; color: #8b949e; }
+        .stage-mode-par { background: #1f6feb22; color: #58a6ff; }
+        .parallel-group {
+            border: 1px solid #1f6feb44; border-radius: 6px;
+            padding: 4px; margin-bottom: 4px; background: #0d1117;
+        }
+        .parallel-group:last-child { margin-bottom: 0; }
+        .parallel-label {
+            font-size: 0.75em; color: #58a6ff; text-transform: uppercase;
+            letter-spacing: 0.05em; padding: 2px 8px 4px; display: flex;
+            align-items: center; gap: 6px;
+        }
+        .parallel-label::before {
+            content: ''; display: inline-block; width: 6px; height: 6px;
+            background: #1f6feb; border-radius: 50%;
+        }
+        .parallel-group .stage-row { margin-bottom: 2px; }
+        .parallel-group .stage-row:last-child { margin-bottom: 0; }
 
         /* Config fields */
         .config-section {
@@ -155,6 +174,17 @@
         .toast.show { opacity: 1; }
         .mod-card-disabled { opacity: 0.5; }
         .mod-card-disabled .mod-name { text-decoration: line-through; }
+
+        /* Collapsible module cards */
+        .mod-collapse-btn {
+            background: none; border: none; color: #484f58; cursor: pointer;
+            font-family: inherit; font-size: 1em; padding: 2px 6px;
+            transition: transform 0.2s;
+        }
+        .mod-collapse-btn:hover { color: #8b949e; }
+        .mod-collapse-btn.collapsed { transform: rotate(-90deg); }
+        .mod-body { overflow: hidden; transition: max-height 0.3s ease, opacity 0.2s ease; }
+        .mod-body.collapsed { max-height: 0 !important; opacity: 0; margin: 0; padding: 0; }
     </style>
 </head>
 <body>
@@ -172,6 +202,14 @@
         <div class="section">
             <h2>Loaded Modules</h2>
             <div id="modules-list"><div style="color:#484f58;text-align:center;padding:20px">Loading...</div></div>
+        </div>
+
+        <div class="section" id="stage-config-section" style="display:none">
+            <h2>Module &amp; Stage Configuration</h2>
+            <p style="color:#8b949e;font-size:0.9em;margin-bottom:12px">
+                Settings for stages shared across pipelines. Changes apply everywhere the stage is used.
+            </p>
+            <div id="stage-config-list"></div>
         </div>
 
         <div class="section" id="consent-section" style="display:none">
@@ -200,6 +238,13 @@
                     </div>
                     <button class="btn" style="background:#da3633;border-color:#da3633;color:#fff" onclick="clearData('mac_assignments','MAC assignments')">Clear All</button>
                 </div>
+                <div style="display:flex;justify-content:space-between;align-items:center;padding:10px;background:#1c0808;border:1px solid #da363344;border-radius:4px">
+                    <div>
+                        <div style="color:#f85149;font-weight:bold">Wipe All Data</div>
+                        <div style="color:#8b949e;font-size:0.85em">Delete all history, cached probes, metrics, leases, and MAC assignments. Module config and consent settings are preserved.</div>
+                    </div>
+                    <button class="btn" style="background:#da3633;border-color:#da3633;color:#fff" onclick="wipeAllData()">Wipe</button>
+                </div>
             </div>
         </div>
     </div>
@@ -209,6 +254,22 @@
     <script>
         let modulesData = [];
         let consentData = {};
+        // Track collapsed state across re-renders
+        const collapsedModules = new Set(JSON.parse(localStorage.getItem('vasili_collapsed_modules') || '[]'));
+
+        function toggleCollapse(modName, btn) {
+            const body = document.getElementById('mod-body-' + modName);
+            if (collapsedModules.has(modName)) {
+                collapsedModules.delete(modName);
+                btn.classList.remove('collapsed');
+                body.classList.remove('collapsed');
+            } else {
+                collapsedModules.add(modName);
+                btn.classList.add('collapsed');
+                body.classList.add('collapsed');
+            }
+            localStorage.setItem('vasili_collapsed_modules', JSON.stringify([...collapsedModules]));
+        }
 
         function el(id) { return document.getElementById(id); }
 
@@ -242,6 +303,8 @@
             const s = hostapStatus;
             const c = hostapConfig;
             const active = s.is_active;
+            const lazyEnabled = s.lazy_enabled || false;
+            const lazyPending = s.lazy_pending || false;
             const section = el('hostap-section');
 
             const ssid = c.ssid || 'Vasili-AP';
@@ -254,9 +317,16 @@
                 `<option value="${card.interface}" ${card.interface===iface || card.interface===(s.interface||'') ? 'selected' : ''}>${card.interface}</option>`
             ).join('');
 
-            const statusBadge = active
-                ? `<span class="badge badge-up">RUNNING</span> ${s.client_count||0} client${(s.client_count||0)!==1?'s':''}`
-                : '<span class="badge badge-idle">STOPPED</span>';
+            let statusBadge;
+            if (active) {
+                statusBadge = `<span class="badge badge-up">RUNNING</span> ${s.client_count||0} client${(s.client_count||0)!==1?'s':''}`;
+            } else if (lazyPending) {
+                statusBadge = '<span class="badge" style="background:#d29922;color:#000">WAITING FOR CARD</span>';
+            } else if (lazyEnabled) {
+                statusBadge = '<span class="badge" style="background:#1f6feb;color:#fff">CONFIRMED</span>';
+            } else {
+                statusBadge = '<span class="badge badge-idle">STOPPED</span>';
+            }
 
             const upstreamInfo = active && s.upstream_interface
                 ? `<span style="color:#8b949e;font-size:0.85em;margin-left:8px">upstream: ${s.upstream_interface}</span>`
@@ -264,12 +334,42 @@
 
             const disabled = active ? 'disabled' : '';
 
+            // Confirm/Disable button for lazy mode (replaced by Always Start toggle)
+
+            // One-shot start/stop button
+            let actionBtn = '';
+            if (active) {
+                actionBtn = `<button class="btn" style="padding:6px 16px;background:#da3633;border-color:#da3633;color:#fff;border-radius:4px;cursor:pointer;font-family:inherit"
+                    onclick="stopHostAP()">Stop AP</button>`;
+            } else if (!lazyPending) {
+                actionBtn = `<button class="btn" style="padding:6px 16px;background:#238636;border-color:#238636;color:#fff;border-radius:4px;cursor:pointer;font-family:inherit"
+                    onclick="startHostAP()">Start AP</button>`;
+            }
+
+            const lazyHint = lazyPending
+                ? '<div style="color:#d29922;font-size:0.85em;margin-top:6px">AP is confirmed and will start automatically when the card becomes available, and on every reboot.</div>'
+                : lazyEnabled && !active
+                ? '<div style="color:#1f6feb;font-size:0.85em;margin-top:6px">AP is confirmed. It will claim the card on reboot and when the card is free.</div>'
+                : '';
+
+            const alwaysStartChecked = lazyEnabled || active ? 'checked' : '';
+
             section.innerHTML = `
                 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
                     <div>${statusBadge}${upstreamInfo}</div>
-                    <button class="btn" style="padding:6px 16px;background:${active?'#da3633':'#238636'};border-color:${active?'#da3633':'#238636'};color:#fff;border-radius:4px;cursor:pointer;font-family:inherit"
-                        onclick="${active ? 'stopHostAP()' : 'startHostAP()'}">${active ? 'Stop AP' : 'Start AP'}</button>
+                    <div style="display:flex">${actionBtn}</div>
                 </div>
+                <div class="toggle-row" style="margin-bottom:10px">
+                    <div class="toggle-label">
+                        <div class="name">Always Start</div>
+                        <div class="desc">Auto-start AP on boot using any available card. Reclaims card when free.</div>
+                    </div>
+                    <label class="switch">
+                        <input type="checkbox" ${alwaysStartChecked} onchange="toggleAlwaysStart(this.checked)">
+                        <span class="slider"></span>
+                    </label>
+                </div>
+                ${lazyHint}
                 <div style="display:flex;flex-direction:column;gap:10px">
                     <div class="cfg-field">
                         <span class="cfg-key">Interface</span>
@@ -371,6 +471,63 @@
                 });
         }
 
+        function confirmHostAP() {
+            const vals = getHostAPFormValues();
+            if (vals.security !== 'open' && vals.password.length < 8) {
+                toast('Password must be at least 8 characters');
+                return;
+            }
+            fetch('/api/hostap/confirm', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(vals),
+            }).then(r => r.json()).then(d => {
+                if (d.success) {
+                    if (d.state === 'running') toast('HostAP confirmed and started');
+                    else toast('HostAP confirmed — will start when card is free');
+                } else {
+                    toast(d.error || 'Failed to confirm');
+                }
+                loadHostAP();
+            });
+        }
+
+        function toggleAlwaysStart(enabled) {
+            if (enabled) {
+                const vals = getHostAPFormValues();
+                vals.interface = '';  // Use any reservable card
+                if (vals.security !== 'open' && vals.password.length < 8) {
+                    toast('Password must be at least 8 characters');
+                    loadHostAP();  // Reset toggle
+                    return;
+                }
+                fetch('/api/hostap/confirm', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(vals),
+                }).then(r => r.json()).then(d => {
+                    if (d.success) {
+                        if (d.state === 'running') toast('Always Start enabled — AP started');
+                        else toast('Always Start enabled — will start when card is free');
+                    } else {
+                        toast(d.error || 'Failed to enable');
+                    }
+                    loadHostAP();
+                });
+            } else {
+                disableHostAP();
+            }
+        }
+
+        function disableHostAP() {
+            fetch('/api/hostap/disable', {method: 'POST'})
+                .then(r => r.json())
+                .then(d => {
+                    toast(d.success ? 'HostAP disabled' : (d.error || 'Failed to disable'));
+                    loadHostAP();
+                });
+        }
+
         function loadModules() {
             Promise.all([
                 fetch('/api/modules').then(r => r.json()),
@@ -379,6 +536,7 @@
                 modulesData = modules;
                 consentData = consent;
                 renderModules();
+                renderStageConfig();
                 renderConsent();
             });
         }
@@ -386,13 +544,52 @@
         function renderModules() {
             const list = el('modules-list');
             list.innerHTML = modulesData.map((m, mi) => {
-                // Stages
+                // Build a lookup from stage name → stage info
+                const stageMap = {};
+                (m.stages || []).forEach(s => { stageMap[s.name] = s; });
+
+                // Render phases if available, else fall back to flat stages
                 let stagesHtml = '';
-                if (m.stages && m.stages.length) {
+                const phases = m.phases && m.phases.length ? m.phases : null;
+                if (phases) {
+                    let stepNum = 1;
+                    stagesHtml = '<div class="stages-list">' + phases.map(phase => {
+                        if (Array.isArray(phase)) {
+                            // Parallel group
+                            const inner = phase.map(name => {
+                                const s = stageMap[name] || {name, requires_consent: false};
+                                const num = stepNum++;
+                                const consentBadge = s.requires_consent
+                                    ? '<span class="stage-consent">requires consent</span>' : '';
+                                return `<div class="stage-row">
+                                    <span class="stage-num">${num}</span>
+                                    <span class="stage-name">${s.name}</span>
+                                    <span class="stage-mode stage-mode-par">parallel</span>
+                                    ${consentBadge}
+                                </div>`;
+                            }).join('');
+                            return `<div class="parallel-group">
+                                <div class="parallel-label">Parallel &mdash; best speed wins</div>
+                                ${inner}
+                            </div>`;
+                        } else {
+                            // Sequential stage
+                            const s = stageMap[phase] || {name: phase, requires_consent: false};
+                            const num = stepNum++;
+                            const consentBadge = s.requires_consent
+                                ? '<span class="stage-consent">requires consent</span>' : '';
+                            return `<div class="stage-row">
+                                <span class="stage-num">${num}</span>
+                                <span class="stage-name">${s.name}</span>
+                                ${consentBadge}
+                            </div>`;
+                        }
+                    }).join('') + '</div>';
+                } else if (m.stages && m.stages.length) {
+                    // Flat list fallback (no phase data)
                     stagesHtml = '<div class="stages-list">' + m.stages.map((s, si) => {
                         const consentBadge = s.requires_consent
-                            ? '<span class="stage-consent">requires consent</span>'
-                            : '';
+                            ? '<span class="stage-consent">requires consent</span>' : '';
                         return `<div class="stage-row">
                             <span class="stage-num">${si+1}</span>
                             <span class="stage-name">${s.name}</span>
@@ -401,46 +598,15 @@
                     }).join('') + '</div>';
                 }
 
-                // Config fields — merge module + stage schemas
-                let allSchemas = {...(m.config_schema || {})};
-                (m.stages || []).forEach(s => {
-                    Object.entries(s.config_schema || {}).forEach(([k, v]) => {
-                        allSchemas[s.name + '.' + k] = {...v, _stage: s.name};
-                    });
-                });
-
-                let configHtml = '';
-                const vals = m.config_values || {};
-                const schemaEntries = Object.entries(allSchemas);
-                if (schemaEntries.length) {
-                    configHtml = '<div class="config-section"><h4>Configuration</h4>';
-                    schemaEntries.forEach(([key, spec]) => {
-                        const val = vals[key] !== undefined ? vals[key] : spec.default;
-                        const displayVal = typeof val === 'object' ? JSON.stringify(val, null, 2) : val;
-                        const isComplex = typeof val === 'object';
-                        const inputId = `cfg-${m.name}-${key}`.replace(/\./g, '-');
-
-                        configHtml += `<div class="cfg-field">
-                            <span class="cfg-key">${key}</span>
-                            <div class="cfg-input-wrap">
-                                ${isComplex
-                                    ? `<textarea id="${inputId}" onchange="saveConfig('${m.name}','${key}',this.value,true)">${displayVal}</textarea>`
-                                    : `<input id="${inputId}" type="${spec.type==='int'?'number':spec.type==='bool'?'checkbox':'text'}"
-                                        ${spec.type==='bool' ? (val?'checked':'') : `value="${displayVal}"`}
-                                        onchange="saveConfig('${m.name}','${key}',${spec.type==='bool'?'this.checked':'this.value'},${spec.type==='int'?'false':'false'})">`}
-                                <div class="cfg-desc">${spec.description || ''}</div>
-                                <div class="cfg-default">Default: ${typeof spec.default === 'object' ? JSON.stringify(spec.default) : spec.default}</div>
-                            </div>
-                        </div>`;
-                    });
-                    configHtml += '</div>';
-                }
-
                 const enabled = m.enabled !== false;
                 const disabledClass = enabled ? '' : ' mod-card-disabled';
 
+                const isCollapsed = collapsedModules.has(m.name);
+                const colCls = isCollapsed ? ' collapsed' : '';
+
                 return `<div class="mod-card${disabledClass}">
                     <div class="mod-header">
+                        <button class="mod-collapse-btn${colCls}" onclick="toggleCollapse('${m.name}', this)" title="Collapse/expand">&#9660;</button>
                         <span class="mod-name">${m.name}</span>
                         <div class="mod-meta">
                             <label class="switch" title="${enabled ? 'Disable' : 'Enable'} module">
@@ -453,37 +619,143 @@
                             </span>
                         </div>
                     </div>
-                    <div class="mod-desc">${m.class} &mdash; ${m.stages&&m.stages.length ? m.stages.length+' stages' : 'single-step module'}</div>
-                    ${stagesHtml}
-                    ${configHtml}
+                    <div class="mod-body${colCls}" id="mod-body-${m.name}">
+                        <div class="mod-desc">${m.class} &mdash; ${m.stages&&m.stages.length
+                            ? m.stages.length+' stages' + (m.phases && m.phases.some(p => Array.isArray(p)) ? ' (has parallel)' : '')
+                            : 'single-step module'}</div>
+                        ${stagesHtml}
+                    </div>
+                </div>`;
+            }).join('');
+        }
+
+        function renderStageConfig() {
+            // Collect all configurable items, deduplicated:
+            //  - Module-level config (from modules with config_schema)
+            //  - Stage-level config (from stages with config_schema, keyed by stage name)
+            // Each item is {name, label, schemas: {key: spec}, vals, pipelines[]}
+            const items = {};  // keyed by unique name
+
+            modulesData.forEach(m => {
+                // Module-level config (e.g. passwords for WPA2)
+                const modSchema = m.config_schema || {};
+                if (Object.keys(modSchema).length) {
+                    if (!items[m.name]) {
+                        items[m.name] = {
+                            name: m.name, label: m.name,
+                            schemas: {}, vals: m.config_values || {},
+                            pipelines: [], saveTarget: m.name,
+                        };
+                    }
+                    Object.entries(modSchema).forEach(([k, v]) => {
+                        items[m.name].schemas[k] = v;
+                    });
+                    items[m.name].pipelines.push(m.name);
+                }
+
+                // Stage-level config (deduplicate by stage name)
+                (m.stages || []).forEach(s => {
+                    const stageSchema = s.config_schema || {};
+                    if (!Object.keys(stageSchema).length) return;
+                    if (!items[s.name]) {
+                        items[s.name] = {
+                            name: s.name, label: s.name,
+                            schemas: {}, vals: m.config_values || {},
+                            pipelines: [], saveTarget: m.name,
+                        };
+                    }
+                    Object.entries(stageSchema).forEach(([k, v]) => {
+                        items[s.name].schemas[s.name + '.' + k] = v;
+                    });
+                    if (!items[s.name].pipelines.includes(m.name))
+                        items[s.name].pipelines.push(m.name);
+                });
+            });
+
+            const entries = Object.values(items);
+            const section = el('stage-config-section');
+            const list = el('stage-config-list');
+
+            if (!entries.length) {
+                section.style.display = 'none';
+                return;
+            }
+
+            section.style.display = '';
+            list.innerHTML = entries.map(item => {
+                const usedBy = item.pipelines.length > 1
+                    ? `<span style="color:#8b949e;font-size:0.85em;margin-left:8px">used by ${item.pipelines.join(', ')}</span>`
+                    : '';
+
+                const fields = Object.entries(item.schemas).map(([key, spec]) => {
+                    const val = item.vals[key] !== undefined ? item.vals[key] : spec.default;
+                    const displayVal = typeof val === 'object' ? JSON.stringify(val, null, 2) : val;
+                    const isComplex = typeof val === 'object';
+                    const inputId = `scfg-${item.name}-${key}`.replace(/\./g, '-');
+                    // Display key without the stage prefix for readability
+                    const displayKey = key.includes('.') ? key.split('.').slice(1).join('.') : key;
+
+                    return `<div class="cfg-field">
+                        <span class="cfg-key">${displayKey}</span>
+                        <div class="cfg-input-wrap">
+                            ${isComplex
+                                ? `<textarea id="${inputId}" onchange="saveConfig('${item.saveTarget}','${key}',this.value,true)">${displayVal}</textarea>`
+                                : `<input id="${inputId}" type="${spec.type==='int'?'number':spec.type==='bool'?'checkbox':'text'}"
+                                    ${spec.type==='bool' ? (val?'checked':'') : `value="${displayVal}"`}
+                                    onchange="saveConfig('${item.saveTarget}','${key}',${spec.type==='bool'?'this.checked':'this.value'},${spec.type==='int'?'false':'false'})">`}
+                            <div class="cfg-desc">${spec.description || ''}</div>
+                            <div class="cfg-default">Default: ${typeof spec.default === 'object' ? JSON.stringify(spec.default) : spec.default}</div>
+                        </div>
+                    </div>`;
+                }).join('');
+
+                const cfgId = 'cfg-' + item.name;
+                const isCollapsed = collapsedModules.has(cfgId);
+                const colCls = isCollapsed ? ' collapsed' : '';
+
+                return `<div class="mod-card">
+                    <div class="mod-header">
+                        <button class="mod-collapse-btn${colCls}" onclick="toggleCollapse('${cfgId}', this)" title="Collapse/expand">&#9660;</button>
+                        <span class="mod-name">${item.label}</span>
+                        ${usedBy}
+                    </div>
+                    <div class="mod-body${colCls}" id="mod-body-${cfgId}">
+                        ${fields}
+                    </div>
                 </div>`;
             }).join('');
         }
 
         function renderConsent() {
-            const consentStages = [];
+            // Deduplicate by stage name — consent is global per stage,
+            // not per pipeline.  Collect which pipelines use each stage.
+            const seen = {};  // stage name → {stage, modules[], mode, approved_ssids}
             modulesData.forEach(m => {
                 (m.stages || []).forEach(s => {
-                    if (s.requires_consent) {
+                    if (!s.requires_consent) return;
+                    if (!seen[s.name]) {
                         const info = consentData[s.name] || {};
-                        consentStages.push({
+                        seen[s.name] = {
                             stage: s.name,
-                            module: m.name,
+                            modules: [],
                             mode: info.mode || 'off',
                             approved_ssids: info.approved_ssids || [],
-                        });
+                        };
                     }
+                    if (!seen[s.name].modules.includes(m.name))
+                        seen[s.name].modules.push(m.name);
                 });
-                if (m.requires_consent) {
+                if (m.requires_consent && !seen[m.name]) {
                     const info = consentData[m.name] || {};
-                    consentStages.push({
+                    seen[m.name] = {
                         stage: m.name,
-                        module: m.name,
+                        modules: [m.name],
                         mode: info.mode || 'off',
                         approved_ssids: info.approved_ssids || [],
-                    });
+                    };
                 }
             });
+            const consentStages = Object.values(seen);
 
             const section = el('consent-section');
             const list = el('consent-list');
@@ -498,6 +770,10 @@
                 const offSel = c.mode === 'off' ? 'selected' : '';
                 const onSel = c.mode === 'on' ? 'selected' : '';
                 const bySel = c.mode === 'by_ssid' ? 'selected' : '';
+
+                const usedBy = c.modules.length
+                    ? `<span class="warn">used by ${c.modules.join(', ')}</span>`
+                    : '';
 
                 let ssidList = '';
                 if (c.mode === 'by_ssid') {
@@ -526,7 +802,7 @@
                         </select>
                         <div>
                             <span class="name">${c.stage}</span>
-                            <span class="warn">(from ${c.module})</span>
+                            ${usedBy}
                         </div>
                     </div>
                     ${ssidList}
@@ -591,6 +867,18 @@
             fetch('/api/' + endpoint, {method: 'DELETE'})
                 .then(r => r.json())
                 .then(d => toast(d.status === 'cleared' ? label + ' cleared (' + d.count + ')' : 'Failed'));
+        }
+
+        function wipeAllData() {
+            if (!confirm('Wipe ALL data (history, probes, metrics, MACs, leases)?\nModule config and consent settings will be kept.\n\nThis cannot be undone.')) return;
+            fetch('/api/wipe_data', {method: 'DELETE'})
+                .then(r => r.json())
+                .then(d => {
+                    if (d.status === 'cleared')
+                        toast('Wiped ' + d.total_documents + ' documents from ' + d.collections.length + ' collections');
+                    else
+                        toast(d.message || 'Wipe failed');
+                });
         }
 
         window.addEventListener('load', () => { loadHostAP(); loadModules(); });

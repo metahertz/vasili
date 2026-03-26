@@ -14,6 +14,7 @@ modules:
     - openNetworkPipeline
     - wpa2Network
     - wpa3Network
+    - wepNetwork
 
 consent: {}  # Per-module consent for offensive stages: {mac_clone: true, ...}
 

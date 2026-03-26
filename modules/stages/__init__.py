@@ -22,6 +22,9 @@ from modules.stages.captive_portal import CaptivePortalStage
 from modules.stages.credentials import SavedCredentialsStage, ConfiguredKeysStage
 from modules.stages.pmkid import PmkidCaptureStage
 from modules.stages.connection_gate import ConnectionGateStage
+from modules.stages.wep_crack import WepCrackStage, WepCommonKeysStage
+from modules.stages.dns_tunnel import DnsTunnelStage
+from modules.stages.dns_port_tunnel import DnsPortTunnelStage
 
 __all__ = [
     'ConnectivityCheckStage',
@@ -31,4 +34,8 @@ __all__ = [
     'ConfiguredKeysStage',
     'PmkidCaptureStage',
     'ConnectionGateStage',
+    'WepCrackStage',
+    'WepCommonKeysStage',
+    'DnsTunnelStage',
+    'DnsPortTunnelStage',
 ]

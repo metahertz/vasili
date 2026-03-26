@@ -1,12 +1,13 @@
 """WPA2 Network Pipeline — multi-stage connection handler for WPA2 networks.
 
-Stages:
+Phases:
   1. SavedCredentials — try nmcli stored credentials
   2. ConfiguredKeys — try passwords from config store
   3. PmkidCapture — PMKID dictionary crack (requires consent)
   4. ConnectionGate — STOP if not associated (no credentials worked)
   5. ConnectivityCheck — verify internet after association
   6. DnsProbe — check external DNS reachability
+  7. [parallel] DnsTunnel + SSH/WG on port 53 — race for best path
 """
 
 from logging_config import get_logger
@@ -18,6 +19,8 @@ from modules.stages import (
     ConnectionGateStage,
     ConnectivityCheckStage,
     DnsProbeStage,
+    DnsTunnelStage,
+    DnsPortTunnelStage,
 )
 
 logger = get_logger(__name__)
@@ -29,16 +32,17 @@ class WPA2NetworkPipeline(PipelineModule):
     auto_connect = False
 
     def __init__(self, card_manager, consent_manager=None, module_config=None, **kwargs):
-        stages = [
+        phases = [
             SavedCredentialsStage(),
             ConfiguredKeysStage(),
             PmkidCaptureStage(),
             ConnectionGateStage(),   # Stops pipeline if no WiFi association
             ConnectivityCheckStage(),
             DnsProbeStage(),
+            [DnsTunnelStage(), DnsPortTunnelStage()],
         ]
         super().__init__(
-            card_manager, stages=stages,
+            card_manager, phases=phases,
             consent_manager=consent_manager,
             module_config=module_config,
         )

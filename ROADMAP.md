@@ -79,11 +79,62 @@ Lower priority enhancements.
 
 ---
 
+## P4 - Pipeline Architecture & Modules (IN PROGRESS)
+
+Infrastructure for chaining multiple sub-modules against a single connected network.
+
+- [x] **Pipeline infrastructure** - PipelineStage, StageResult, PipelineModule base classes with context passing, auto_connect flag
+- [x] **Reusable stage library** - modules/stages/ package with shared stages (ConnectivityCheck, DnsProbe, CaptivePortal, SavedCredentials, ConfiguredKeys)
+- [x] **Module config store** - MongoDB-backed per-module settings with schema declaration (module_config.py)
+- [x] **Consent system** - Per-module consent for offensive stages, MongoDB + YAML fallback (consent.py)
+- [x] **Config/consent API** - GET/PUT /api/modules/<name>/config, POST /api/modules/<name>/consent
+- [x] **Module priority sorting** - Modules sorted by priority in scan loop
+- [x] **Parallel network testing** - ThreadPoolExecutor with one worker per connection card
+- [x] **Open Network Pipeline** - connectivity_check → captive_portal → mac_clone → dns_probe
+- [x] **WPA2 Network Pipeline** - saved_credentials → configured_keys → connectivity_check → dns_probe
+- [x] **WPA3 Network Pipeline** - saved_credentials → configured_keys → connectivity_check → dns_probe
+  - [x] ConnectivityCheckStage - Verify internet access
+  - [x] CaptivePortalStage - Detect and auto-authenticate portals
+  - [x] DnsProbeStage - Test external DNS reachability (TCP/UDP, configurable targets)
+  - [x] MacCloneStage - Clone authenticated client MACs to bypass portals (requires consent)
+- [x] **Hidden network discovery** - Resolve hidden SSIDs via saved connections, directed probes, and passive sniffing (modules/hiddenNetwork.py)
+
+---
+
+- [x] **PMKID capture & crack** - Capture PMKID from WPA2 APs via hcxdumptool, crack with hashcat or Python PBKDF2 fallback (modules/stages/pmkid.py, requires consent)
+
+---
+
+## P5 - Tunneling Modules (PLANNED)
+
+Last-resort connectivity when HTTP is blocked but DNS/ICMP passes through.
+
+- [ ] **DNS tunnel** - iodine-based DNS tunneling (requires consent + own server)
+- [ ] **ICMP tunnel** - hans/ptunnel-based ICMP tunneling (requires consent + own server)
+
+---
+
+## P6 - Credential-based Modules (PLANNED)
+
+Opt-in modules with explicit consent gates for authorized testing.
+
+- [ ] **WPS PIN** - WPS PIN brute force via reaver/bully (requires consent)
+- [ ] **WPA wordlist** - Dictionary attack via aircrack-ng (requires consent)
+
+---
+
+## P7 - Recon Modules (PLANNED)
+
+Background intelligence gathering about the wireless environment.
+
+- [ ] **Signal mapper** - Track signal strength over time per network
+- [ ] **Network profiler** - Fingerprint APs (vendor, capabilities, security config)
+- [ ] **Client monitor** - Observe client devices, feeds MAC clone candidates (requires consent)
+
+---
+
 ## Out of Scope
 
-These will not be implemented (at least not now):
-
-- **Offensive modules** (DNS tunneling, ICMP tunneling, WPA brute force) - The README mentions these as possibilities, but they require careful consideration, explicit user consent flows, and are legally sensitive. Defer indefinitely.
 - **Mobile app** - Focus on the core Pi-based solution first
 - **Cloud connectivity** - This is a local-first tool
 - **Commercial captive portal bypass** - Only handle standard open portals, not paid services

@@ -26,6 +26,7 @@ modules:
   enabled:
     # - openNetwork
     # - wpa2Network
+    # - wepNetwork
     # - speedtest
 
 # Network scanner settings

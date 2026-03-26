@@ -65,7 +65,31 @@
         .conn-item .method { color: #8b949e; font-size: 0.85em; }
         .conn-stats { display: flex; gap: 16px; margin-top: 6px; font-size: 0.9em; }
         .dl { color: #3fb950; } .ul { color: #58a6ff; } .pg { color: #d29922; } .sc { color: #bc8cff; }
-        .net-list, .log-list, .hist-list { max-height: 400px; overflow-y: auto; }
+        .net-list, .log-list, .hist-list, .probe-list { max-height: 400px; overflow-y: auto; }
+        .probe-item {
+            display: flex; align-items: center; justify-content: space-between;
+            padding: 5px 8px; border-bottom: 1px solid #21262d; font-size: 0.9em;
+        }
+        .probe-item:last-child { border-bottom: none; }
+        .probe-item:hover { background: #1c2128; }
+        .probe-ssid { font-weight: bold; color: #c9d1d9; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .probe-bssid { color: #484f58; font-size: 0.85em; margin: 0 10px; font-family: inherit; }
+        .probe-age { color: #8b949e; font-size: 0.8em; flex-shrink: 0; margin-right: 8px; }
+        .probe-del {
+            background: none; border: none; color: #484f58; cursor: pointer;
+            font-size: 0.9em; padding: 2px 4px; flex-shrink: 0;
+        }
+        .probe-del:hover { color: #f85149; }
+        .probe-toolbar {
+            display: flex; justify-content: space-between; align-items: center;
+            margin-bottom: 8px; padding-bottom: 6px; border-bottom: 1px solid #21262d;
+        }
+        .probe-toolbar input {
+            background: #0d1117; border: 1px solid #30363d; border-radius: 4px;
+            color: #c9d1d9; padding: 4px 8px; font-family: inherit; font-size: 0.85em;
+            width: 200px;
+        }
+        .probe-toolbar input:focus { outline: none; border-color: #58a6ff; }
         .net-item {
             display: flex; align-items: center; justify-content: space-between;
             padding: 5px 8px; border-bottom: 1px solid #21262d; font-size: 0.9em;
@@ -155,6 +179,7 @@
             <div class="stat"><span class="label">Cards:</span> <span class="val" id="s-cards">0</span></div>
             <div class="stat"><span class="label">Modules:</span> <span class="val" id="s-mods">0</span></div>
             <div class="stat"><span class="label">Reconnects:</span> <span class="val" id="s-reconn">0</span></div>
+            <div class="stat"><span class="label">HostAP:</span> <span class="val" id="s-hostap">--</span></div>
             <div class="stat"><span class="label">Auto:</span> <span class="val" id="s-auto">--</span></div>
             <div class="stat"><span class="label">DB:</span> <span class="val" id="s-mongo">--</span></div>
         </div>
@@ -166,6 +191,14 @@
             <div class="panel"><h2>Connection History</h2><div class="hist-list" id="history-list"><div class="empty">Loading...</div></div></div>
             <div class="panel"><h2>Bandwidth (live)</h2><div id="bandwidth-list"><div class="empty">No data</div></div></div>
             <div class="panel"><h2>Known Networks <span class="count" id="saved-count"></span></h2><div id="saved-list"><div class="empty">Loading...</div></div></div>
+            <div class="panel grid-full">
+                <h2>Cached Probes <span class="count" id="probe-count"></span></h2>
+                <div class="probe-toolbar">
+                    <input type="text" id="probe-filter" placeholder="Filter by SSID or BSSID..." oninput="renderProbes()">
+                    <button class="btn" style="background:#da3633;border-color:#da3633;color:#fff;font-size:0.8em;padding:4px 10px" onclick="clearAllProbes()">Clear All</button>
+                </div>
+                <div class="probe-list" id="probe-list"><div class="empty">Loading...</div></div>
+            </div>
         </div>
     </div>
 
@@ -180,13 +213,22 @@
         let activityEntries = [];
 
         socket.on('connect', () => {});
-        socket.on('status_update', updateStatus);
+        socket.on('status_update', d => { updateStatus(d); refreshCards(); });
         socket.on('connections_update', d => updateConnections(d.connections));
         let lastNets = null;
         socket.on('scan_update', d => { lastNets = d.networks; updateNearbyNetworks(d.networks); });
         socket.on('activity_update', appendActivity);
 
         function el(id) { return document.getElementById(id); }
+
+        let _cardsRefreshTimer = null;
+        function refreshCards() {
+            // Debounce: collapse rapid status_update bursts into one /api/cards fetch
+            if (_cardsRefreshTimer) clearTimeout(_cardsRefreshTimer);
+            _cardsRefreshTimer = setTimeout(() => {
+                fetch('/api/cards').then(r=>r.json()).then(updateCards).catch(()=>{});
+            }, 300);
+        }
 
         function updateStatus(s) {
             el('s-scan').textContent = s.scanning ? 'Active' : 'Idle';
@@ -195,6 +237,8 @@
             el('s-cards').textContent = s.cards_in_use || 0;
             el('s-mods').textContent = s.active_modules || 0;
             el('s-reconn').textContent = s.reconnect_events || 0;
+            el('s-hostap').textContent = s.hostap_active ? (s.hostap_ssid || 'Up') : 'Off';
+            el('s-hostap').className = 'val ' + (s.hostap_active ? 'on' : 'off');
             el('s-auto').textContent = s.auto_selection_enabled ? 'On' : 'Off';
             el('s-auto').className = 'val ' + (s.auto_selection_enabled ? 'on' : 'off');
             el('s-mongo').textContent = s.metrics_available ? 'Up' : 'Down';
@@ -509,6 +553,71 @@
             }).join('');
         }
 
+        let probesData = [];
+
+        function loadProbes() {
+            fetch('/api/probes').then(r => r.json()).then(data => {
+                probesData = data || [];
+                renderProbes();
+            }).catch(() => {});
+        }
+
+        function renderProbes() {
+            const list = el('probe-list');
+            const filter = (el('probe-filter').value || '').toLowerCase();
+            const filtered = filter
+                ? probesData.filter(p => (p.ssid||'').toLowerCase().includes(filter) || (p.bssid||'').toLowerCase().includes(filter))
+                : probesData;
+
+            el('probe-count').textContent = probesData.length ? `(${filtered.length}/${probesData.length})` : '';
+
+            if (!filtered.length) {
+                list.innerHTML = `<div class="empty">${probesData.length ? 'No matches' : 'No cached probes'}</div>`;
+                return;
+            }
+
+            list.innerHTML = filtered.map(p => {
+                const age = p.last_seen ? fmtAge(p.last_seen) : '';
+                return `<div class="probe-item">
+                    <span class="probe-ssid">${p.ssid || '(empty)'}</span>
+                    <span class="probe-bssid">${p.bssid}</span>
+                    ${age ? `<span class="probe-age">${age}</span>` : ''}
+                    <button class="probe-del" onclick="deleteProbe('${p.bssid}')" title="Delete">&times;</button>
+                </div>`;
+            }).join('');
+        }
+
+        function fmtAge(ts) {
+            const sec = Math.floor(Date.now()/1000 - ts);
+            if (sec < 60) return 'just now';
+            if (sec < 3600) return Math.floor(sec/60) + 'm ago';
+            if (sec < 86400) return Math.floor(sec/3600) + 'h ago';
+            return Math.floor(sec/86400) + 'd ago';
+        }
+
+        function deleteProbe(bssid) {
+            fetch('/api/probes/' + encodeURIComponent(bssid), {method: 'DELETE'})
+                .then(r => r.json())
+                .then(d => {
+                    if (d.status === 'deleted') {
+                        probesData = probesData.filter(p => p.bssid !== bssid);
+                        renderProbes();
+                    }
+                });
+        }
+
+        function clearAllProbes() {
+            if (!confirm('Clear all cached probes? This cannot be undone.')) return;
+            fetch('/api/probes', {method: 'DELETE'})
+                .then(r => r.json())
+                .then(d => {
+                    if (d.status === 'cleared') {
+                        probesData = [];
+                        renderProbes();
+                    }
+                });
+        }
+
         function useConnection(index) {
             fetch('/api/use_connection/'+index, {method:'POST'}).then(r=>r.json()).then(d=>{if(!d.success)alert('Failed')});
         }
@@ -529,6 +638,7 @@
             fetch('/api/saved_networks').then(r=>r.json()).then(updateSavedNetworks).catch(()=>{});
             fetch('/api/activity').then(r=>r.json()).then(d=>{activityEntries=d||[];renderActivity()}).catch(()=>{});
             loadConsentStages();
+            loadProbes();
         }
         window.addEventListener('load', () => { loadOnce(); poll(); setInterval(poll,5000); setInterval(loadOnce,30000); });
     </script>

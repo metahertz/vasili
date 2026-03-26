@@ -1,10 +1,10 @@
 """Open Network Pipeline — multi-stage connection handler for open WiFi networks.
 
-Connects to an open network and runs stages to achieve internet connectivity:
-  1. ConnectivityCheck — is internet already available?
-  2. CaptivePortal — detect and auto-authenticate portal
-  3. MacClone — clone authenticated client MAC (requires consent)
-  4. DnsProbe — check external DNS reachability
+Connects to an open network and runs phases to achieve internet connectivity:
+  Phase 1 (sequential): ConnectivityCheck — is internet already available?
+  Phase 2 (sequential): DnsProbe — check external DNS reachability
+  Phase 3 (parallel):   CaptivePortal + DnsTunnel + SSH/WG on port 53
+  Phase 4 (sequential): MacClone — clone authenticated client MAC (fallback)
 
 Stages are imported from the shared modules.stages package.
 """
@@ -15,6 +15,8 @@ from modules.stages import (
     ConnectivityCheckStage,
     CaptivePortalStage,
     DnsProbeStage,
+    DnsTunnelStage,
+    DnsPortTunnelStage,
 )
 
 logger = get_logger(__name__)
@@ -23,23 +25,27 @@ logger = get_logger(__name__)
 class OpenNetworkPipeline(PipelineModule):
     """Pipeline for open WiFi networks.
 
-    Stages run sequentially. If any stage achieves internet (has_internet=True),
-    the pipeline stops and runs a speedtest. If all stages exhaust, the card
-    is disconnected.
+    Discovery stages run sequentially to build context, then exploitation
+    strategies (captive portal bypass, DNS tunneling, SSH/53, WireGuard/53)
+    run in parallel.  The pipeline picks the fastest path.  MacClone is a
+    sequential fallback that only runs if the parallel phase fails.
     """
     priority = 10
 
     def __init__(self, card_manager, consent_manager=None, module_config=None, **kwargs):
         from modules.macClone import MacCloneStage
 
-        stages = [
+        phases = [
+            # Phase 1-2: Discovery (sequential)
             ConnectivityCheckStage(),
-            CaptivePortalStage(),
-            MacCloneStage(),
             DnsProbeStage(),
+            # Phase 3: Exploitation strategies (parallel — best speed wins)
+            [CaptivePortalStage(), DnsTunnelStage(), DnsPortTunnelStage()],
+            # Phase 4: Fallback (sequential, destructive — changes MAC)
+            MacCloneStage(),
         ]
         super().__init__(
-            card_manager, stages=stages,
+            card_manager, phases=phases,
             consent_manager=consent_manager,
             module_config=module_config,
         )
