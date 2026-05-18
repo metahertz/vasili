@@ -1,44 +1,104 @@
-# Vasili Configuration - Raspberry Pi Deployment
+# Vasili Configuration File
+# Copy this file to config.yaml and customize as needed.
+# All settings are optional - defaults will be used for any missing values.
 
+# WiFi interface preferences
 interfaces:
+  # Preferred interfaces, ordered by priority (first = highest priority)
+  # Cards are leased in this order when available
   preferred:
-    - wlan0
-    - wlx00c0ca3f236a
-    - wlxf81a6721ce6b
-  excluded: []
-  scan_interface: wlan0
+    # - wlan0
+    # - wlan1
 
+  # Interfaces to exclude from use entirely
+  excluded:
+    # - wlan2
+
+  # Dedicated interface for scanning (optional)
+  # If set, this interface will be used exclusively for network scanning
+  # scan_interface: wlan0
+
+# Module settings
 modules:
+  # List of enabled module names. If not specified, all modules are enabled.
+  # Module names correspond to the Python file names in the modules/ directory
+  # (without the .py extension)
   enabled:
-    - hiddenNetwork
-    - openNetworkPipeline
-    - wpa2Network
-    - wpa3Network
-    - wepNetwork
+     - openNetwork
+     - wpa2Network
+     - wepNetwork
+     - speedtest
 
-consent: {}  # Per-module consent for offensive stages: {mac_clone: true, ...}
-
+# Network scanner settings
 scanner:
-  scan_interval: 10
+  # Interval between scans in seconds
+  scan_interval: 5
 
+# Web interface settings
 web:
+  # Host to bind to (0.0.0.0 = all interfaces)
   host: "0.0.0.0"
+  # Port to listen on
   port: 5000
+  # Set to false to run in headless mode (no web interface)
   enabled: true
 
+# Logging settings
 logging:
-  level: "DEBUG"
+  # Log level: DEBUG, INFO, WARNING, ERROR, CRITICAL
+  level: "INFO"
 
-database:
-  mongodb_uri: "mongodb://localhost:27017/"
-  db_name: "vasili"
-
+# Captive Portal settings
 captive_portal:
+  # MongoDB connection string for storing portal patterns
+  # Set to empty string to disable pattern storage (portal detection still works)
+  mongodb_uri: "mongodb://localhost:27017/"
+
+  # Detection timeout in seconds
   detection_timeout: 10
+
+  # Authentication timeout in seconds
   auth_timeout: 15
 
+# Auto-selection mode settings
 auto_selection:
-  enabled: false
+  # Enable automatic connection selection and switching
+  # When enabled, Vasili will automatically select the best available connection
+  # and switch to better connections as they become available
+  enabled: true
+
+  # Seconds between evaluations of available connections
+  # The auto-selector will periodically check if a better connection is available
   evaluation_interval: 30
+
+  # Minimum score improvement required to trigger a connection switch
+  # This prevents excessive switching for marginal improvements
+  # Score range is 0-100, so 10.0 means a 10% improvement is required
   min_score_improvement: 10.0
+
+  # Initial delay before first auto-selection (seconds)
+  # This allows connections to stabilize after startup
   initial_delay: 10
+
+# Host Access Point settings
+# Steal a WiFi card from the connection pool to run as a local AP.
+# Clients connecting to the AP can access the Vasili UI and share
+# internet from active connections via NAT.
+hostap:
+  # Set to true to auto-start the AP on boot
+  enabled: false
+
+  # Interface to use for the AP (omit to auto-select last connection card)
+  # interface: wlan2
+
+  # Network name broadcast by the AP
+  ssid: "Vasili-AP"
+
+  # Security mode: open, wpa2, or wpa3
+  security: "wpa2"
+
+  # Password (minimum 8 characters, ignored when security is 'open')
+  password: "vasili1234"
+
+  # WiFi channel (1-14 for 2.4GHz, 36+ for 5GHz)
+  channel: 6

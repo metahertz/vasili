@@ -200,6 +200,11 @@
         </div>
 
         <div class="section">
+            <h2>Wired Ethernet</h2>
+            <div id="ethernet-section"><div style="color:#484f58;text-align:center;padding:20px">Loading...</div></div>
+        </div>
+
+        <div class="section">
             <h2>Loaded Modules</h2>
             <div id="modules-list"><div style="color:#484f58;text-align:center;padding:20px">Loading...</div></div>
         </div>
@@ -881,7 +886,69 @@
                 });
         }
 
-        window.addEventListener('load', () => { loadHostAP(); loadModules(); });
+        // ----- Ethernet -----
+        let ethernetStatus = {};
+
+        function loadEthernet() {
+            fetch('/api/ethernet/status').then(r => r.json()).then(status => {
+                ethernetStatus = status;
+                renderEthernet();
+            });
+        }
+
+        function renderEthernet() {
+            const s = ethernetStatus;
+            const section = el('ethernet-section');
+            const isManagement = s.mode === 'management';
+            const linkBadge = s.has_link
+                ? '<span class="badge badge-up">LINK UP</span>'
+                : '<span class="badge badge-down">NO LINK</span>';
+            const modeBadge = isManagement
+                ? '<span class="badge badge-connection">MANAGEMENT</span>'
+                : '<span class="badge" style="background:#d2992233;color:#f0883e">POOL</span>';
+
+            section.innerHTML = `
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+                    <div>${modeBadge} ${linkBadge}
+                        ${s.ip_address ? `<span style="color:#8b949e;font-size:0.85em;margin-left:8px">IP: ${s.ip_address}</span>` : ''}
+                    </div>
+                </div>
+                <div class="toggle-row" style="margin-bottom:10px">
+                    <div class="toggle-label">
+                        <div class="name">Management Mode</div>
+                        <div class="desc">Static IP on 10.55.0.0/24 with DHCP and internet sharing. Disable to add eth0 to the resource pool for Ethernet-based network testing.</div>
+                    </div>
+                    <label class="switch">
+                        <input type="checkbox" ${isManagement ? 'checked' : ''} onchange="setEthernetMode(this.checked ? 'management' : 'pool')">
+                        <span class="slider"></span>
+                    </label>
+                </div>
+                ${!isManagement ? '<div style="color:#d29922;font-size:0.85em;margin-top:6px">eth0 is in pool mode — available for Ethernet-based modules. Management access via USB-C only.</div>' : ''}
+                <div style="color:#8b949e;font-size:0.85em;margin-top:8px">
+                    Interface: <span style="color:#c9d1d9">${s.interface || 'eth0'}</span>
+                    ${isManagement ? '&mdash; SSH and Web UI accessible at this IP' : ''}
+                </div>`;
+        }
+
+        function setEthernetMode(mode) {
+            fetch('/api/ethernet/mode', {
+                method: 'PUT',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({mode}),
+            }).then(r => r.json()).then(d => {
+                if (d.success) {
+                    toast('Ethernet mode: ' + mode);
+                    if (mode === 'pool') {
+                        toast('Warning: eth0 management access disabled');
+                    }
+                } else {
+                    toast(d.error || 'Failed');
+                }
+                loadEthernet();
+            });
+        }
+
+        window.addEventListener('load', () => { loadHostAP(); loadEthernet(); loadModules(); });
     </script>
 </body>
 </html>

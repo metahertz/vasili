@@ -3077,6 +3077,10 @@ class WifiManager:
         self._hostap_lazy_pending = False  # True when AP is confirmed but waiting for card
         self._hostap_claiming = False  # Re-entrancy guard for card-returned callback
 
+        # Ethernet mode: 'management' (default — static IP, DHCP, NAT)
+        #                 'pool' (available for future ethernet-based modules)
+        self._ethernet_mode = self._load_ethernet_mode()
+
         # Register callback to track reconnection events
         self.connection_monitor.on_reconnect(self._on_reconnect)
 
@@ -3447,6 +3451,96 @@ class WifiManager:
                 'HostAP card unavailable at boot — queued for lazy start: %s',
                 result.get('error'),
             )
+
+    # ------------------------------------------------------------------
+    # Ethernet mode management
+    # ------------------------------------------------------------------
+
+    def _load_ethernet_mode(self) -> str:
+        """Load ethernet mode from MongoDB."""
+        try:
+            config = get_config()
+            client = MongoClient(
+                config.database.mongodb_uri, serverSelectionTimeoutMS=2000
+            )
+            mdb = client[config.database.db_name]
+            doc = mdb['ethernet_config'].find_one({'_id': 'mode'})
+            return doc.get('mode', 'management') if doc else 'management'
+        except Exception:
+            return 'management'
+
+    def _save_ethernet_mode(self, mode: str):
+        """Save ethernet mode to MongoDB."""
+        try:
+            config = get_config()
+            client = MongoClient(
+                config.database.mongodb_uri, serverSelectionTimeoutMS=2000
+            )
+            mdb = client[config.database.db_name]
+            mdb['ethernet_config'].update_one(
+                {'_id': 'mode'},
+                {'$set': {'mode': mode}},
+                upsert=True,
+            )
+        except Exception as e:
+            logger.error(f'Failed to save ethernet mode: {e}')
+
+    def get_ethernet_status(self) -> dict:
+        """Return current ethernet port status and mode."""
+        iface = 'eth0'
+        has_link = False
+        ip_addr = None
+        try:
+            with open(f'/sys/class/net/{iface}/carrier') as f:
+                has_link = f.read().strip() == '1'
+        except Exception:
+            pass
+        try:
+            ip_addr = network_isolation.get_interface_ip(iface)
+        except Exception:
+            pass
+
+        return {
+            'interface': iface,
+            'mode': self._ethernet_mode,
+            'has_link': has_link,
+            'ip_address': ip_addr,
+        }
+
+    def set_ethernet_mode(self, mode: str) -> dict:
+        """Switch ethernet port between management and pool modes."""
+        if mode not in ('management', 'pool'):
+            return {'success': False, 'error': f'Invalid mode: {mode}'}
+
+        old_mode = self._ethernet_mode
+        if mode == old_mode:
+            return {'success': True, 'mode': mode, 'changed': False}
+
+        self._ethernet_mode = mode
+        self._save_ethernet_mode(mode)
+
+        iface = 'eth0'
+        if mode == 'pool':
+            # Remove management IP and stop DHCP serving on eth0
+            # The interface becomes available for future ethernet modules
+            logger.info('Switching eth0 to pool mode')
+            subprocess.run(
+                ['ip', 'addr', 'flush', 'dev', iface],
+                capture_output=True, timeout=5,
+            )
+        elif mode == 'management':
+            # Restore management IP
+            logger.info('Switching eth0 to management mode')
+            subprocess.run(
+                ['ip', 'addr', 'add', '10.55.0.2/24', 'dev', iface],
+                capture_output=True, timeout=5,
+            )
+            subprocess.run(
+                ['ip', 'link', 'set', iface, 'up'],
+                capture_output=True, timeout=5,
+            )
+
+        return {'success': True, 'mode': mode, 'changed': True}
 
     def _on_reconnect(self, card: WifiCard, success: bool):
         """Callback invoked when reconnection is attempted."""
@@ -4217,6 +4311,23 @@ def confirm_hostap():
 def disable_hostap():
     """Disable lazy/auto HostAP and stop if running."""
     result = wifi_manager.disable_hostap_lazy()
+    emit_status_update()
+    return jsonify(result)
+
+
+@app.route('/api/ethernet/status')
+def get_ethernet_status():
+    """Get wired ethernet port status and mode."""
+    return jsonify(wifi_manager.get_ethernet_status())
+
+
+@app.route('/api/ethernet/mode', methods=['PUT'])
+def set_ethernet_mode():
+    """Switch ethernet between management and pool modes."""
+    data = request.get_json()
+    if not data or 'mode' not in data:
+        return jsonify({'error': 'Missing mode'}), 400
+    result = wifi_manager.set_ethernet_mode(data['mode'])
     emit_status_update()
     return jsonify(result)
 

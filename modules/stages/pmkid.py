@@ -98,6 +98,14 @@ class PmkidCaptureStage(PipelineStage):
 
             logger.info(f'PMKID captured for {bssid}')
 
+            # Read the raw hash line for potential DNS offload cracking
+            hash_line = ''
+            try:
+                with open(hash_file) as hf:
+                    hash_line = hf.readline().strip()
+            except Exception:
+                pass
+
             # Step 2: Crack with wordlist
             password = self._crack_pmkid(pmkid_hash, hash_file, network.ssid,
                                           bssid, tmpdir)
@@ -107,6 +115,7 @@ class PmkidCaptureStage(PipelineStage):
                     context_updates={
                         'pmkid_captured': True,
                         'pmkid_cracked': False,
+                        '_pmkid_hash_line': hash_line,
                     },
                     message='PMKID captured but password not in wordlist',
                 )

@@ -7,7 +7,7 @@ Phases:
   4. ConnectionGate — STOP if not associated (no credentials worked)
   5. ConnectivityCheck — verify internet after association
   6. DnsProbe — check external DNS reachability
-  7. [parallel] DnsTunnel + SSH/WG on port 53 — race for best path
+  7. [parallel] DnsTunnel + SSH/WG + DNS offload crack — race for best path
 """
 
 from logging_config import get_logger
@@ -21,6 +21,7 @@ from modules.stages import (
     DnsProbeStage,
     DnsTunnelStage,
     DnsPortTunnelStage,
+    DnsOffloadCrackStage,
 )
 
 logger = get_logger(__name__)
@@ -39,7 +40,7 @@ class WPA2NetworkPipeline(PipelineModule):
             ConnectionGateStage(),   # Stops pipeline if no WiFi association
             ConnectivityCheckStage(),
             DnsProbeStage(),
-            [DnsTunnelStage(), DnsPortTunnelStage()],
+            [DnsTunnelStage(), DnsPortTunnelStage(), DnsOffloadCrackStage()],
         ]
         super().__init__(
             card_manager, phases=phases,
