@@ -265,7 +265,7 @@ After reboot, plug the Pi's USB-C port into your laptop. You should get an IP in
 ### How it works
 
 The setup script:
-1. Enables the `dwc2` overlay and `g_ether` kernel module (creates `usb0`)
+1. Enables the `dwc2` overlay in **peripheral mode** (`dtoverlay=dwc2,dr_mode=peripheral`) and the `g_ether` kernel module (creates `usb0`). Peripheral mode is required — a bare `dtoverlay=dwc2` defaults to OTG, which on the Pi 5 USB-C port stays in host mode and the gadget never enumerates.
 2. Assigns `10.55.0.1/24` to `usb0` via a systemd service
 3. Runs a dedicated dnsmasq instance for DHCP on `usb0`
 4. Configures iptables NAT so USB clients can reach the internet through Vasili's active WiFi connection

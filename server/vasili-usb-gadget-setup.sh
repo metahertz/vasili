@@ -71,12 +71,18 @@ setup_boot_config() {
 
     log "Using boot config: $config_file"
 
-    # Add dtoverlay=dwc2 if not present
-    if ! grep -q '^dtoverlay=dwc2' "$config_file"; then
-        echo 'dtoverlay=dwc2' >> "$config_file"
-        log "Added dtoverlay=dwc2 to $config_file"
+    # USB-C gadget mode needs the dwc2 controller in PERIPHERAL mode.
+    # A bare "dtoverlay=dwc2" defaults to OTG; on the Pi 5 USB-C port OTG
+    # role detection does not reliably switch to peripheral, so the
+    # controller comes up as a USB host and the gadget never enumerates.
+    if grep -q '^dtoverlay=dwc2,dr_mode=peripheral' "$config_file"; then
+        log "dwc2 peripheral mode already configured"
+    elif grep -q '^dtoverlay=dwc2$' "$config_file"; then
+        sed -i 's/^dtoverlay=dwc2$/dtoverlay=dwc2,dr_mode=peripheral/' "$config_file"
+        log "Upgraded 'dtoverlay=dwc2' (OTG) to peripheral mode in $config_file"
     else
-        log "dtoverlay=dwc2 already present"
+        echo 'dtoverlay=dwc2,dr_mode=peripheral' >> "$config_file"
+        log "Added dtoverlay=dwc2,dr_mode=peripheral to $config_file"
     fi
 
     # Ensure dwc2 and g_ether are loaded at boot
