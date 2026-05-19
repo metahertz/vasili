@@ -2559,6 +2559,39 @@ class AutoSelector:
         }
 
 
+def run_interface_speedtest(interface: str) -> tuple[float, float, float]:
+    """Run a speedtest bound to a specific interface's IP.
+
+    Verifies actual internet connectivity through the interface before
+    running the speedtest. Binding to the interface IP (rather than using
+    the device's default route) prevents false-positive results from
+    traffic routing through another connection on the device — e.g. a
+    USB-C / ethernet NIC.
+
+    Args:
+        interface: Network interface to bind the speedtest to.
+
+    Returns:
+        Tuple of (download_mbps, upload_mbps, ping_ms).
+
+    Raises:
+        ConnectionError: If the interface has no IP or no internet.
+    """
+    ip = network_isolation.get_interface_ip(interface)
+    if not ip:
+        raise ConnectionError(f'No IP address on {interface}')
+
+    if not network_isolation.verify_connectivity(interface):
+        raise ConnectionError(f'No internet connectivity via {interface}')
+
+    st = speedtest.Speedtest(source_address=ip)
+    st.get_best_server()
+    download = st.download() / 1_000_000
+    upload = st.upload() / 1_000_000
+    ping = st.results.ping
+    return download, upload, ping
+
+
 class ConnectionModule:
     # Base class for connection modules
     priority = 50  # Lower = runs first in scan loop
@@ -2601,21 +2634,7 @@ class ConnectionModule:
             ConnectionError: If no IP or no internet on the interface
         """
         interface = interface_override or card.interface
-        ip = network_isolation.get_interface_ip(interface)
-        if not ip:
-            raise ConnectionError(f'No IP address on {interface}')
-
-        if not network_isolation.verify_connectivity(interface):
-            raise ConnectionError(
-                f'No internet connectivity via {interface}'
-            )
-
-        st = speedtest.Speedtest(source_address=ip)
-        st.get_best_server()
-        download = st.download() / 1_000_000
-        upload = st.upload() / 1_000_000
-        ping = st.results.ping
-        return download, upload, ping
+        return run_interface_speedtest(interface)
 
 
 class PipelineStage:
@@ -3019,6 +3038,12 @@ class WifiManager:
 
         self.modules = self._load_connection_modules()
         self.disabled_modules: set[str] = self._load_disabled_modules()
+
+        # Speedtest is a post-connection action, not a connection module:
+        # it runs after a module connects and is bound to that module's
+        # interface, so it can't false-positive off another connection.
+        from modules.speedtest import SpeedtestAction
+        self.speedtest_action = SpeedtestAction(self.card_manager)
         self.suitable_connections: list[ConnectionResult] = []
         self.nearby_networks: list[WifiNetwork] = []
         self.metrics_store = PerformanceMetricsStore(
@@ -3706,6 +3731,10 @@ class WifiManager:
                             self.attempt_details[attempt_id]['mac'] = used_mac
 
             if result.connected:
+                # Post-connection action: measure speed bound to the
+                # interface this module connected on (no-op if the module
+                # already produced metrics).
+                result = self.speedtest_action.run(result)
                 score = result.calculate_score()
                 logger.info(
                     f'Successfully connected to {network.ssid} '

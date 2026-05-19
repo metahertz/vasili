@@ -8,7 +8,7 @@
 
 The project now has:
 - ✅ **Fully functional core framework** - WiFi card management, network scanning, connection orchestration, NAT bridging
-- ✅ **Three connection modules** - Open networks, WPA2 networks, speedtest
+- ✅ **Connection modules** - Open, WPA2 and WEP networks (speedtest runs as a post-connection action)
 - ✅ **Complete web interface** - Flask app with templates
 - ✅ **Comprehensive test suite** - Unit and integration tests with CI
 - ✅ **Production-ready features** - Error handling, logging, config files, auto-reconnect

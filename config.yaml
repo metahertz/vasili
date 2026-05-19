@@ -23,11 +23,12 @@ modules:
   # List of enabled module names. If not specified, all modules are enabled.
   # Module names correspond to the Python file names in the modules/ directory
   # (without the .py extension)
+  # Note: speedtest is NOT a module — it runs as a post-connection action
+  # after a module connects, bound to that connection's interface.
   enabled:
      - openNetwork
      - wpa2Network
      - wepNetwork
-     - speedtest
 
 # Network scanner settings
 scanner:

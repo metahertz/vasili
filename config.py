@@ -136,8 +136,10 @@ class VasiliConfig:
         if 'interfaces' in data:
             iface_data = data['interfaces']
             config.interfaces = InterfaceConfig(
-                preferred=iface_data.get('preferred', []),
-                excluded=iface_data.get('excluded', []),
+                # `or []` coerces a present-but-null YAML key (e.g. a list
+                # with every item commented out) to an empty list.
+                preferred=iface_data.get('preferred') or [],
+                excluded=iface_data.get('excluded') or [],
                 scan_interface=iface_data.get('scan_interface'),
             )
 
