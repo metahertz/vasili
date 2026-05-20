@@ -43,3 +43,6 @@ htmlcov/
 # OS
 .DS_Store
 Thumbs.db
+
+# Vasili secrets — Fernet key for known-network credential vault
+.vasili-master.key
