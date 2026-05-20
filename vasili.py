@@ -2681,16 +2681,71 @@ class PipelineModule(ConnectionModule):
 
     def __init__(self, card_manager, stages: list[PipelineStage] = None,
                  phases: list = None,
-                 consent_manager=None, module_config=None, **kwargs):
+                 consent_manager=None, module_config=None,
+                 pipeline_config=None, **kwargs):
         super().__init__(card_manager, module_config=module_config)
         if phases is not None:
-            self.phases = phases
+            default_phases = phases
         else:
-            self.phases = list(stages or [])
+            default_phases = list(stages or [])
+
+        # Record hard-coded defaults so the pipeline-builder UI can offer
+        # a "reset" action, then apply any user-customised layout on top.
+        self.default_phases = default_phases
+        self.pipeline_config = pipeline_config
+        if pipeline_config is not None:
+            pipeline_config.register_defaults(
+                self.__class__.__name__, default_phases,
+            )
+            custom = pipeline_config.get_layout(self.__class__.__name__)
+            if custom:
+                self.phases = self._hydrate_phases(custom) or default_phases
+            else:
+                self.phases = default_phases
+        else:
+            self.phases = default_phases
+
         # Flat list of all stages for API introspection (/api/modules)
         self.stages = self._flatten_phases(self.phases)
         self.consent_manager = consent_manager
         self.last_stage_log: list[dict] = []
+
+    def _hydrate_phases(self, layout: list) -> list:
+        """Rebuild ``phases`` from a saved ``[name | [name, ...]]`` layout.
+
+        Unknown stage names are dropped with a warning rather than
+        crashing the module — the UI surfaces the same registry so this
+        should only happen when a saved layout outlives a stage.
+        """
+        from modules.stages import get_stage_registry
+        registry = get_stage_registry()
+        rebuilt: list = []
+        for phase in layout:
+            if isinstance(phase, list):
+                instances = []
+                for name in phase:
+                    cls = registry.get(name)
+                    if cls is None:
+                        logger.warning(
+                            f'Pipeline layout for {self.__class__.__name__} '
+                            f'references unknown stage {name!r} — skipping'
+                        )
+                        continue
+                    instances.append(cls())
+                if len(instances) >= 2:
+                    rebuilt.append(instances)
+                elif len(instances) == 1:
+                    rebuilt.append(instances[0])
+            else:
+                cls = registry.get(phase)
+                if cls is None:
+                    logger.warning(
+                        f'Pipeline layout for {self.__class__.__name__} '
+                        f'references unknown stage {phase!r} — skipping'
+                    )
+                    continue
+                rebuilt.append(cls())
+        return rebuilt
 
     @staticmethod
     def _flatten_phases(phases: list) -> list[PipelineStage]:
@@ -3036,6 +3091,14 @@ class WifiManager:
             db_name=config.database.db_name,
         )
 
+        # Pipeline-builder store — captures hard-coded defaults during
+        # module load and applies any user-customised layout on top.
+        from pipeline_config import PipelineConfigStore
+        self.pipeline_config = PipelineConfigStore(
+            mongo_uri=config.database.mongodb_uri,
+            db_name=config.database.db_name,
+        )
+
         self.modules = self._load_connection_modules()
         self.disabled_modules: set[str] = self._load_disabled_modules()
 
@@ -3155,6 +3218,8 @@ class WifiManager:
                                 kwargs['consent_manager'] = self.consent_manager
                             if 'module_config' in sig.parameters:
                                 kwargs['module_config'] = self.module_config
+                            if 'pipeline_config' in sig.parameters:
+                                kwargs['pipeline_config'] = self.pipeline_config
                             if 'probe_history' in sig.parameters:
                                 kwargs['probe_history'] = self.probe_history
                             modules.append(obj(self.card_manager, **kwargs))
@@ -4081,6 +4146,11 @@ def config_page():
     return render_template('config.html')
 
 
+@app.route('/builder')
+def pipeline_builder_page():
+    return render_template('builder.html')
+
+
 @app.route('/api/status')
 def get_status():
     return jsonify(wifi_manager.status)
@@ -4208,6 +4278,103 @@ def get_modules():
             'phases': phases_info,
         })
     return jsonify(modules)
+
+
+@app.route('/api/pipeline-builder/stages')
+def get_pipeline_stages():
+    """Catalog of all stages that can appear in a pipeline layout."""
+    from modules.stages import get_stage_registry
+    out = []
+    for name, cls in sorted(get_stage_registry().items()):
+        out.append({
+            'name': name,
+            'class': cls.__name__,
+            'requires_consent': getattr(cls, 'requires_consent', False),
+            'description': (cls.__doc__ or '').strip().split('\n')[0],
+        })
+    return jsonify(out)
+
+
+@app.route('/api/pipeline-builder/pipelines')
+def get_pipeline_layouts():
+    """All pipeline modules with their default and effective layouts.
+
+    The ``connectivity_gate`` field marks where the
+    ``connectivity_check`` stage sits in the effective layout so the UI
+    can render pre-gate / post-gate sections; ``-1`` means it isn't in
+    the layout at all (the user will need to add it).
+    """
+    pcfg = wifi_manager.pipeline_config
+    out = []
+    for mod in wifi_manager.modules:
+        if not hasattr(mod, 'phases'):
+            continue
+        cls_name = mod.__class__.__name__
+        defaults = pcfg.get_defaults(cls_name)
+        custom = pcfg.get_layout(cls_name)
+        effective = custom if custom is not None else defaults
+        gate_idx = next(
+            (i for i, p in enumerate(effective)
+             if (isinstance(p, str) and p == 'connectivity_check')
+                or (isinstance(p, list) and 'connectivity_check' in p)),
+            -1,
+        )
+        out.append({
+            'name': getattr(mod, 'name', cls_name),
+            'class': cls_name,
+            'priority': getattr(mod, 'priority', 50),
+            'auto_connect': getattr(mod, 'auto_connect', True),
+            'default_phases': defaults,
+            'phases': effective,
+            'customised': custom is not None,
+            'connectivity_gate': gate_idx,
+        })
+    return jsonify(out)
+
+
+@app.route('/api/pipeline-builder/pipelines/<cls_name>', methods=['PUT'])
+def set_pipeline_layout(cls_name):
+    """Save a custom layout. Body: ``{"phases": [str | [str, ...], ...]}``."""
+    data = request.get_json() or {}
+    phases = data.get('phases')
+    if not isinstance(phases, list):
+        return jsonify({'error': 'phases must be a list'}), 400
+
+    from modules.stages import get_stage_registry
+    registry = get_stage_registry()
+    for phase in phases:
+        items = phase if isinstance(phase, list) else [phase]
+        for name in items:
+            if not isinstance(name, str) or name not in registry:
+                return jsonify({'error': f'unknown stage {name!r}'}), 400
+
+    ok = wifi_manager.pipeline_config.set_layout(cls_name, phases)
+    if not ok:
+        return jsonify({'error': 'persistence unavailable'}), 503
+
+    # Apply the new layout to the live pipeline instance so the change
+    # takes effect immediately without a process restart.
+    for mod in wifi_manager.modules:
+        if mod.__class__.__name__ == cls_name and hasattr(mod, '_hydrate_phases'):
+            rebuilt = mod._hydrate_phases(phases)
+            if rebuilt:
+                mod.phases = rebuilt
+                mod.stages = PipelineModule._flatten_phases(rebuilt)
+            break
+    return jsonify({'success': True, 'class': cls_name, 'phases': phases})
+
+
+@app.route('/api/pipeline-builder/pipelines/<cls_name>', methods=['DELETE'])
+def reset_pipeline_layout(cls_name):
+    """Drop a custom layout so the module reverts to its hard-coded defaults."""
+    ok = wifi_manager.pipeline_config.reset_layout(cls_name)
+    # Restore defaults on the live instance too.
+    for mod in wifi_manager.modules:
+        if mod.__class__.__name__ == cls_name and hasattr(mod, 'default_phases'):
+            mod.phases = mod.default_phases
+            mod.stages = PipelineModule._flatten_phases(mod.default_phases)
+            break
+    return jsonify({'success': ok, 'class': cls_name})
 
 
 @app.route('/api/modules/<name>/config', methods=['GET'])

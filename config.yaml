@@ -25,8 +25,12 @@ modules:
   # (without the .py extension)
   # Note: speedtest is NOT a module — it runs as a post-connection action
   # after a module connects, bound to that connection's interface.
+  #
+  # Pipeline layouts (which stages run pre/post the connectivity gate,
+  # and whether groups run in parallel) are customisable from the
+  # `/builder` UI page.
   enabled:
-     - openNetwork
+     - openNetworkPipeline
      - wpa2Network
      - wepNetwork
 

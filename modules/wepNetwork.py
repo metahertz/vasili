@@ -47,7 +47,7 @@ class WEPNetworkPipeline(PipelineModule):
     auto_connect = False  # Credential stages handle connection
 
     def __init__(self, card_manager, consent_manager=None,
-                 module_config=None, **kwargs):
+                 module_config=None, pipeline_config=None, **kwargs):
         phases = [
             SavedCredentialsStage(),       # 1. nmcli stored profiles
             ConfiguredKeysStage(),         # 2. User-configured keys
@@ -63,6 +63,7 @@ class WEPNetworkPipeline(PipelineModule):
             card_manager, phases=phases,
             consent_manager=consent_manager,
             module_config=module_config,
+            pipeline_config=pipeline_config,
         )
 
     def can_connect(self, network: WifiNetwork) -> bool:

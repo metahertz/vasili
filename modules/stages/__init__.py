@@ -40,4 +40,41 @@ __all__ = [
     'DnsTunnelStage',
     'DnsPortTunnelStage',
     'DnsOffloadCrackStage',
+    'STAGE_REGISTRY',
+    'get_stage_registry',
 ]
+
+
+# Registry keyed by stage.name (the same identifier persisted in the
+# pipeline-builder config) so the API and UI can list every stage we
+# know how to instantiate. ``mac_clone`` lives outside this package but
+# is added by ``get_stage_registry()`` to keep the import graph flat.
+STAGE_REGISTRY: dict = {
+    ConnectivityCheckStage.name: ConnectivityCheckStage,
+    ConnectionGateStage.name: ConnectionGateStage,
+    SavedCredentialsStage.name: SavedCredentialsStage,
+    ConfiguredKeysStage.name: ConfiguredKeysStage,
+    DnsProbeStage.name: DnsProbeStage,
+    CaptivePortalStage.name: CaptivePortalStage,
+    DnsTunnelStage.name: DnsTunnelStage,
+    DnsPortTunnelStage.name: DnsPortTunnelStage,
+    DnsOffloadCrackStage.name: DnsOffloadCrackStage,
+    PmkidCaptureStage.name: PmkidCaptureStage,
+    WepCommonKeysStage.name: WepCommonKeysStage,
+    WepCrackStage.name: WepCrackStage,
+}
+
+
+def get_stage_registry() -> dict:
+    """Return ``{stage_name: stage_class}`` for every known stage.
+
+    Lazy-imports ``MacCloneStage`` so this module stays independent of
+    ``modules.macClone`` (which itself imports from ``vasili``).
+    """
+    registry = dict(STAGE_REGISTRY)
+    try:
+        from modules.macClone import MacCloneStage
+        registry[MacCloneStage.name] = MacCloneStage
+    except Exception:
+        pass
+    return registry

@@ -32,7 +32,8 @@ class OpenNetworkPipeline(PipelineModule):
     """
     priority = 10
 
-    def __init__(self, card_manager, consent_manager=None, module_config=None, **kwargs):
+    def __init__(self, card_manager, consent_manager=None, module_config=None,
+                 pipeline_config=None, **kwargs):
         from modules.macClone import MacCloneStage
 
         phases = [
@@ -48,6 +49,7 @@ class OpenNetworkPipeline(PipelineModule):
             card_manager, phases=phases,
             consent_manager=consent_manager,
             module_config=module_config,
+            pipeline_config=pipeline_config,
         )
 
     def can_connect(self, network: WifiNetwork) -> bool:

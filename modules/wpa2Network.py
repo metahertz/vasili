@@ -32,7 +32,8 @@ class WPA2NetworkPipeline(PipelineModule):
     priority = 50
     auto_connect = False
 
-    def __init__(self, card_manager, consent_manager=None, module_config=None, **kwargs):
+    def __init__(self, card_manager, consent_manager=None, module_config=None,
+                 pipeline_config=None, **kwargs):
         phases = [
             SavedCredentialsStage(),
             ConfiguredKeysStage(),
@@ -46,6 +47,7 @@ class WPA2NetworkPipeline(PipelineModule):
             card_manager, phases=phases,
             consent_manager=consent_manager,
             module_config=module_config,
+            pipeline_config=pipeline_config,
         )
 
     def can_connect(self, network: WifiNetwork) -> bool:

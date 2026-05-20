@@ -1,0 +1,540 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Vasili - Pipeline Builder</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+            background: #0d1117; color: #c9d1d9;
+            min-height: 100vh; padding: 16px; font-size: 13px;
+        }
+        .container { max-width: 1100px; margin: 0 auto; }
+        .nav {
+            display: flex; justify-content: space-between; align-items: center;
+            margin-bottom: 24px;
+        }
+        .nav h1 { color: #58a6ff; font-size: 1.4em; }
+        .nav .nav-links { display: flex; gap: 8px; }
+        .nav a {
+            text-decoration: none; color: #c9d1d9; padding: 6px 14px;
+            border: 1px solid #30363d; border-radius: 4px; background: #21262d;
+            font-family: inherit; font-size: 0.85em;
+        }
+        .nav a:hover { background: #30363d; }
+
+        .help-box {
+            background: #0d2942; border: 1px solid #1f6feb44;
+            border-radius: 6px; padding: 12px 16px; margin-bottom: 16px;
+            font-size: 0.9em; line-height: 1.6;
+        }
+        .help-box h3 { color: #58a6ff; margin-bottom: 6px; font-size: 0.95em; }
+        .help-box ul { margin-left: 18px; color: #8b949e; }
+
+        .pipeline-card {
+            background: #161b22; border: 1px solid #30363d;
+            border-radius: 6px; padding: 16px; margin-bottom: 16px;
+        }
+        .pipeline-header {
+            display: flex; justify-content: space-between; align-items: center;
+            margin-bottom: 14px; padding-bottom: 10px;
+            border-bottom: 1px solid #21262d;
+        }
+        .pipeline-name {
+            color: #58a6ff; font-size: 1.1em; font-weight: bold;
+        }
+        .pipeline-class { color: #8b949e; font-size: 0.85em; margin-left: 8px; }
+        .pipeline-actions { display: flex; gap: 8px; align-items: center; }
+
+        .badge {
+            font-size: 0.75em; padding: 2px 6px; border-radius: 3px;
+            font-weight: bold; text-transform: uppercase;
+        }
+        .badge-custom { background: #d2992233; color: #d29922; }
+        .badge-default { background: #30363d; color: #8b949e; }
+        .badge-consent { background: #d2992233; color: #d29922; }
+        .badge-gate { background: #1f6feb33; color: #58a6ff; }
+
+        .btn {
+            padding: 5px 12px; background: #21262d; color: #c9d1d9;
+            border: 1px solid #30363d; border-radius: 4px; cursor: pointer;
+            font-family: inherit; font-size: 0.85em;
+        }
+        .btn:hover { background: #30363d; }
+        .btn-primary { background: #238636; border-color: #2ea043; color: #fff; }
+        .btn-primary:hover { background: #2ea043; }
+        .btn-danger { background: #da3633; border-color: #da3633; color: #fff; }
+        .btn-danger:hover { background: #b62b28; }
+        .btn-sm { padding: 2px 8px; font-size: 0.8em; }
+        .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+        /* Phase section (pre/post gate) */
+        .phase-section {
+            background: #0d1117; border: 1px solid #21262d;
+            border-radius: 6px; padding: 10px; margin-bottom: 10px;
+        }
+        .phase-section-header {
+            display: flex; justify-content: space-between; align-items: center;
+            color: #8b949e; font-size: 0.85em; text-transform: uppercase;
+            letter-spacing: 0.05em; margin-bottom: 8px;
+            padding-bottom: 6px; border-bottom: 1px solid #21262d;
+        }
+        .phase-section-header .label { color: #8b949e; }
+        .phase-empty {
+            color: #484f58; font-style: italic; padding: 10px;
+            text-align: center; border: 1px dashed #30363d;
+            border-radius: 4px;
+        }
+
+        /* Gate divider */
+        .gate-divider {
+            display: flex; align-items: center; gap: 10px;
+            margin: 10px 0; padding: 8px 12px;
+            background: #0d2942; border: 1px solid #1f6feb44;
+            border-radius: 6px;
+        }
+        .gate-divider-label {
+            color: #58a6ff; font-weight: bold; font-size: 0.9em;
+            text-transform: uppercase; letter-spacing: 0.05em;
+        }
+        .gate-missing {
+            background: #2c0e0e; border-color: #f8514944;
+        }
+        .gate-missing .gate-divider-label { color: #f85149; }
+
+        /* Phase rows */
+        .phase-row {
+            display: flex; align-items: center; gap: 6px;
+            background: #161b22; border: 1px solid #30363d;
+            border-radius: 4px; padding: 6px 10px; margin-bottom: 4px;
+        }
+        .phase-row.is-parallel {
+            background: #0d1117; border-color: #1f6feb44;
+            padding: 6px 8px; flex-direction: column; align-items: stretch;
+        }
+        .parallel-label {
+            font-size: 0.75em; color: #58a6ff; text-transform: uppercase;
+            letter-spacing: 0.05em; margin-bottom: 4px;
+            display: flex; justify-content: space-between; align-items: center;
+        }
+        .parallel-label .label::before {
+            content: ''; display: inline-block; width: 6px; height: 6px;
+            background: #1f6feb; border-radius: 50%; margin-right: 6px;
+            vertical-align: middle;
+        }
+        .stage-chip {
+            display: flex; align-items: center; gap: 6px;
+            background: #161b22; border: 1px solid #30363d;
+            border-radius: 4px; padding: 4px 8px; margin-bottom: 3px;
+            font-size: 0.9em;
+        }
+        .stage-chip:last-child { margin-bottom: 0; }
+        .stage-name { flex: 1; color: #c9d1d9; font-weight: bold; }
+        .stage-num {
+            color: #484f58; width: 24px; text-align: center;
+            font-size: 0.85em;
+        }
+        .row-actions {
+            display: flex; gap: 4px; align-items: center;
+        }
+        .icon-btn {
+            background: transparent; border: none; color: #8b949e;
+            cursor: pointer; padding: 2px 6px; font-family: inherit;
+            font-size: 0.95em; border-radius: 3px;
+        }
+        .icon-btn:hover { background: #21262d; color: #c9d1d9; }
+        .icon-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+        .icon-btn.danger:hover { color: #f85149; background: #2c0e0e; }
+
+        /* Add-stage dropdown */
+        .add-row {
+            display: flex; gap: 6px; align-items: center;
+            margin-top: 6px;
+        }
+        select, input[type="text"] {
+            background: #0d1117; border: 1px solid #30363d;
+            color: #c9d1d9; border-radius: 4px; padding: 4px 8px;
+            font-family: inherit; font-size: 0.85em;
+        }
+        select { flex: 1; }
+        select:focus { outline: none; border-color: #58a6ff; }
+
+        .toast {
+            position: fixed; bottom: 20px; right: 20px;
+            background: #238636; color: #fff; padding: 10px 16px;
+            border-radius: 6px; font-size: 0.9em; z-index: 200;
+            opacity: 0; transition: opacity 0.3s;
+        }
+        .toast.show { opacity: 1; }
+        .toast.error { background: #da3633; }
+
+        .dirty-indicator {
+            color: #d29922; font-size: 0.85em; margin-right: 8px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="nav">
+            <h1>VASILI Pipeline Builder</h1>
+            <div class="nav-links">
+                <a href="/config">Settings</a>
+                <a href="/">Dashboard</a>
+            </div>
+        </div>
+
+        <div class="help-box">
+            <h3>How it works</h3>
+            <ul>
+                <li>Every loaded pipeline module is listed below. Phases run top-to-bottom; a phase is either one stage or a group of stages running in parallel.</li>
+                <li>The <strong>connectivity-check gate</strong> splits each pipeline: stages above it run pre-gate (typically credential / association work), stages below run post-gate (probe / tunnel / bypass strategies).</li>
+                <li>If a pipeline has no <code>connectivity_check</code> phase it will always fail to confirm internet — add one from the palette.</li>
+                <li>Click the parallel toggle on a phase to fold it into the previous one, so they race; the fastest with real internet wins.</li>
+                <li>Changes save to MongoDB and apply to the running pipeline immediately. Reset returns to the module's hard-coded defaults.</li>
+            </ul>
+        </div>
+
+        <div id="pipelines">
+            <div style="color:#484f58;text-align:center;padding:40px">Loading pipelines…</div>
+        </div>
+    </div>
+
+    <div class="toast" id="toast"></div>
+
+    <script>
+        // -------------------- State --------------------
+        // pipelinesByClass[clsName] = {
+        //   name, class, priority, auto_connect, default_phases,
+        //   phases (working copy),  saved_phases, customised, dirty
+        // }
+        let pipelinesByClass = {};
+        let allStages = [];
+
+        function el(id) { return document.getElementById(id); }
+        function toast(msg, isErr) {
+            const t = el('toast');
+            t.textContent = msg;
+            t.classList.toggle('error', !!isErr);
+            t.classList.add('show');
+            setTimeout(() => t.classList.remove('show'), 2400);
+        }
+
+        // Deep-clone phases (string or array of strings)
+        function clonePhases(phases) {
+            return phases.map(p => Array.isArray(p) ? [...p] : p);
+        }
+        function samePhases(a, b) { return JSON.stringify(a) === JSON.stringify(b); }
+
+        // -------------------- Loading --------------------
+        function load() {
+            Promise.all([
+                fetch('/api/pipeline-builder/stages').then(r => r.json()),
+                fetch('/api/pipeline-builder/pipelines').then(r => r.json()),
+            ]).then(([stages, pipelines]) => {
+                allStages = stages;
+                pipelinesByClass = {};
+                pipelines.forEach(p => {
+                    pipelinesByClass[p.class] = {
+                        ...p,
+                        saved_phases: clonePhases(p.phases || []),
+                        phases: clonePhases(p.phases || []),
+                        dirty: false,
+                    };
+                });
+                renderAll();
+            }).catch(err => {
+                el('pipelines').innerHTML =
+                    '<div style="color:#f85149;text-align:center;padding:20px">Failed to load: ' + err + '</div>';
+            });
+        }
+
+        // -------------------- Rendering --------------------
+        function renderAll() {
+            const list = el('pipelines');
+            const keys = Object.keys(pipelinesByClass).sort((a, b) =>
+                pipelinesByClass[a].priority - pipelinesByClass[b].priority);
+            if (!keys.length) {
+                list.innerHTML = '<div style="color:#484f58;text-align:center;padding:20px">No pipeline modules loaded. Enable a pipeline module in <code>config.yaml</code> first.</div>';
+                return;
+            }
+            list.innerHTML = keys.map(renderPipeline).join('');
+        }
+
+        function renderPipeline(cls) {
+            const p = pipelinesByClass[cls];
+            const phases = p.phases;
+            const gateIdx = phases.findIndex(ph =>
+                (typeof ph === 'string' && ph === 'connectivity_check')
+                || (Array.isArray(ph) && ph.includes('connectivity_check')));
+
+            const stageOptions = allStages.map(s =>
+                `<option value="${s.name}">${s.name}${s.requires_consent ? ' (consent)' : ''}</option>`
+            ).join('');
+
+            const prePhases = gateIdx === -1 ? phases : phases.slice(0, gateIdx);
+            const gatePhase = gateIdx === -1 ? null : phases[gateIdx];
+            const postPhases = gateIdx === -1 ? [] : phases.slice(gateIdx + 1);
+
+            const customBadge = p.customised
+                ? '<span class="badge badge-custom">Customised</span>'
+                : '<span class="badge badge-default">Defaults</span>';
+
+            const dirtyMark = p.dirty
+                ? '<span class="dirty-indicator">● unsaved</span>' : '';
+
+            const renderPhaseList = (list, offset, emptyMsg) => {
+                if (!list.length) {
+                    return `<div class="phase-empty">${emptyMsg}</div>`;
+                }
+                return list.map((ph, i) => renderPhase(cls, ph, offset + i)).join('');
+            };
+
+            const gateSection = gatePhase
+                ? `<div class="gate-divider">
+                       <span class="gate-divider-label">⛓ Connectivity Check Gate</span>
+                       ${renderPhase(cls, gatePhase, gateIdx)}
+                   </div>`
+                : `<div class="gate-divider gate-missing">
+                       <span class="gate-divider-label">⚠ No Connectivity Check Gate</span>
+                       <button class="btn btn-sm" onclick="addStage('${cls}', -1, 'connectivity_check')">Insert connectivity_check</button>
+                   </div>`;
+
+            return `<div class="pipeline-card">
+                <div class="pipeline-header">
+                    <div>
+                        <span class="pipeline-name">${p.name}</span>
+                        <span class="pipeline-class">${p.class} · priority ${p.priority}${p.auto_connect===false?' · stages handle association':''}</span>
+                    </div>
+                    <div class="pipeline-actions">
+                        ${dirtyMark}
+                        ${customBadge}
+                        <button class="btn btn-sm" onclick="resetPipeline('${cls}')" ${p.customised?'':'disabled'}>Reset to defaults</button>
+                        <button class="btn btn-sm btn-primary" onclick="savePipeline('${cls}')" ${p.dirty?'':'disabled'}>Save</button>
+                    </div>
+                </div>
+
+                <div class="phase-section">
+                    <div class="phase-section-header">
+                        <span class="label">Pre-gate phases</span>
+                        <span style="color:#484f58">${prePhases.length} phase${prePhases.length===1?'':'s'}</span>
+                    </div>
+                    ${renderPhaseList(prePhases, 0, 'No pre-gate phases. Add credentials / association stages here.')}
+                    <div class="add-row">
+                        <select id="add-pre-${cls}">${stageOptions}</select>
+                        <button class="btn btn-sm" onclick="addStageFromSelect('${cls}','pre')">+ Add pre-gate</button>
+                    </div>
+                </div>
+
+                ${gateSection}
+
+                <div class="phase-section">
+                    <div class="phase-section-header">
+                        <span class="label">Post-gate phases</span>
+                        <span style="color:#484f58">${postPhases.length} phase${postPhases.length===1?'':'s'}</span>
+                    </div>
+                    ${renderPhaseList(postPhases, (gateIdx === -1 ? prePhases.length : gateIdx + 1),
+                        'No post-gate phases. Add probe / tunnel / bypass strategies here.')}
+                    <div class="add-row">
+                        <select id="add-post-${cls}">${stageOptions}</select>
+                        <button class="btn btn-sm" onclick="addStageFromSelect('${cls}','post')">+ Add post-gate</button>
+                    </div>
+                </div>
+            </div>`;
+        }
+
+        function renderPhase(cls, phase, idx) {
+            const isParallel = Array.isArray(phase);
+            const p = pipelinesByClass[cls];
+            const lastIdx = p.phases.length - 1;
+
+            const upDisabled = idx === 0 ? 'disabled' : '';
+            const downDisabled = idx === lastIdx ? 'disabled' : '';
+
+            if (isParallel) {
+                const inner = phase.map((name, j) => {
+                    const meta = allStages.find(s => s.name === name) || {};
+                    const cons = meta.requires_consent
+                        ? '<span class="badge badge-consent">consent</span>' : '';
+                    return `<div class="stage-chip">
+                        <span class="stage-num">${idx+1}.${j+1}</span>
+                        <span class="stage-name">${name}</span>
+                        ${cons}
+                        <div class="row-actions">
+                            <button class="icon-btn danger" title="Remove from group" onclick="removeFromParallel('${cls}',${idx},${j})">✕</button>
+                        </div>
+                    </div>`;
+                }).join('');
+                const addOpts = allStages.map(s =>
+                    `<option value="${s.name}">${s.name}</option>`).join('');
+                return `<div class="phase-row is-parallel">
+                    <div class="parallel-label">
+                        <span class="label">Parallel — best speed wins (${phase.length})</span>
+                        <div class="row-actions">
+                            <button class="icon-btn" title="Move up" onclick="movePhase('${cls}',${idx},-1)" ${upDisabled}>↑</button>
+                            <button class="icon-btn" title="Move down" onclick="movePhase('${cls}',${idx},1)" ${downDisabled}>↓</button>
+                            <button class="icon-btn" title="Ungroup (back to sequential)" onclick="ungroupPhase('${cls}',${idx})">⊟</button>
+                            <button class="icon-btn danger" title="Remove phase" onclick="removePhase('${cls}',${idx})">✕</button>
+                        </div>
+                    </div>
+                    ${inner}
+                    <div class="add-row">
+                        <select id="par-add-${cls}-${idx}">${addOpts}</select>
+                        <button class="btn btn-sm" onclick="addToParallel('${cls}',${idx})">+ Add to group</button>
+                    </div>
+                </div>`;
+            }
+
+            // Sequential single stage
+            const meta = allStages.find(s => s.name === phase) || {};
+            const cons = meta.requires_consent
+                ? '<span class="badge badge-consent">consent</span>' : '';
+            const isGate = phase === 'connectivity_check';
+            const gateBadge = isGate
+                ? '<span class="badge badge-gate">gate</span>' : '';
+            // "Merge with previous" only makes sense from phase 2+
+            const mergeDisabled = idx === 0 ? 'disabled' : '';
+
+            return `<div class="phase-row">
+                <span class="stage-num">${idx+1}</span>
+                <span class="stage-name">${phase}</span>
+                ${gateBadge}
+                ${cons}
+                <div class="row-actions">
+                    <button class="icon-btn" title="Move up" onclick="movePhase('${cls}',${idx},-1)" ${upDisabled}>↑</button>
+                    <button class="icon-btn" title="Move down" onclick="movePhase('${cls}',${idx},1)" ${downDisabled}>↓</button>
+                    <button class="icon-btn" title="Merge with previous (run in parallel)" onclick="mergeWithPrevious('${cls}',${idx})" ${mergeDisabled}>⊞</button>
+                    <button class="icon-btn danger" title="Remove stage" onclick="removePhase('${cls}',${idx})">✕</button>
+                </div>
+            </div>`;
+        }
+
+        // -------------------- Mutators --------------------
+        function markDirty(cls) {
+            const p = pipelinesByClass[cls];
+            p.dirty = !samePhases(p.phases, p.saved_phases);
+        }
+
+        function addStageFromSelect(cls, where) {
+            const sel = el(`add-${where}-${cls}`);
+            if (!sel) return;
+            const name = sel.value;
+            const p = pipelinesByClass[cls];
+            const gateIdx = p.phases.findIndex(ph =>
+                (typeof ph === 'string' && ph === 'connectivity_check')
+                || (Array.isArray(ph) && ph.includes('connectivity_check')));
+
+            if (where === 'pre') {
+                const insertAt = gateIdx === -1 ? p.phases.length : gateIdx;
+                p.phases.splice(insertAt, 0, name);
+            } else {
+                p.phases.push(name);
+            }
+            markDirty(cls);
+            renderAll();
+        }
+
+        function addStage(cls, atIdx, name) {
+            const p = pipelinesByClass[cls];
+            if (atIdx < 0) p.phases.push(name);
+            else p.phases.splice(atIdx, 0, name);
+            markDirty(cls);
+            renderAll();
+        }
+
+        function removePhase(cls, idx) {
+            const p = pipelinesByClass[cls];
+            p.phases.splice(idx, 1);
+            markDirty(cls);
+            renderAll();
+        }
+
+        function movePhase(cls, idx, dir) {
+            const p = pipelinesByClass[cls];
+            const j = idx + dir;
+            if (j < 0 || j >= p.phases.length) return;
+            const tmp = p.phases[idx];
+            p.phases[idx] = p.phases[j];
+            p.phases[j] = tmp;
+            markDirty(cls);
+            renderAll();
+        }
+
+        function mergeWithPrevious(cls, idx) {
+            const p = pipelinesByClass[cls];
+            if (idx === 0) return;
+            const prev = p.phases[idx - 1];
+            const cur = p.phases[idx];
+            const prevList = Array.isArray(prev) ? prev : [prev];
+            const curList = Array.isArray(cur) ? cur : [cur];
+            p.phases.splice(idx - 1, 2, [...prevList, ...curList]);
+            markDirty(cls);
+            renderAll();
+        }
+
+        function ungroupPhase(cls, idx) {
+            const p = pipelinesByClass[cls];
+            const phase = p.phases[idx];
+            if (!Array.isArray(phase)) return;
+            p.phases.splice(idx, 1, ...phase);
+            markDirty(cls);
+            renderAll();
+        }
+
+        function addToParallel(cls, idx) {
+            const sel = el(`par-add-${cls}-${idx}`);
+            if (!sel) return;
+            const name = sel.value;
+            const p = pipelinesByClass[cls];
+            const phase = p.phases[idx];
+            if (Array.isArray(phase)) phase.push(name);
+            markDirty(cls);
+            renderAll();
+        }
+
+        function removeFromParallel(cls, idx, sub) {
+            const p = pipelinesByClass[cls];
+            const phase = p.phases[idx];
+            if (!Array.isArray(phase)) return;
+            phase.splice(sub, 1);
+            // If only one stage remains, demote to sequential
+            if (phase.length === 1) p.phases[idx] = phase[0];
+            else if (phase.length === 0) p.phases.splice(idx, 1);
+            markDirty(cls);
+            renderAll();
+        }
+
+        // -------------------- Save / Reset --------------------
+        function savePipeline(cls) {
+            const p = pipelinesByClass[cls];
+            fetch('/api/pipeline-builder/pipelines/' + cls, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ phases: p.phases }),
+            }).then(r => r.json().then(j => ({ ok: r.ok, j })))
+              .then(({ ok, j }) => {
+                if (!ok) throw new Error(j.error || 'save failed');
+                p.saved_phases = clonePhases(p.phases);
+                p.customised = true;
+                p.dirty = false;
+                toast('Saved ' + cls + ' — applied to live pipeline');
+                renderAll();
+            }).catch(e => toast('Save failed: ' + e.message, true));
+        }
+
+        function resetPipeline(cls) {
+            if (!confirm('Reset ' + cls + ' to hard-coded defaults? This drops your customisation.')) return;
+            fetch('/api/pipeline-builder/pipelines/' + cls, { method: 'DELETE' })
+                .then(r => r.json())
+                .then(() => {
+                    toast(cls + ' reset to defaults');
+                    load();
+                })
+                .catch(e => toast('Reset failed: ' + e.message, true));
+        }
+
+        load();
+    </script>
+</body>
+</html>
