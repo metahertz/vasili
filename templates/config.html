@@ -408,6 +408,25 @@
                 </div>`;
             }
 
+            // Always show the per-card capability summary so the user
+            // can confirm upfront which cards can actually serve the AP,
+            // without having to attempt a start and read the failure.
+            const allCards = hostapCards.map(c => c.interface);
+            const nonCapable = allCards.filter(i => !apCapable.includes(i));
+            if (allCards.length > 0 && apCapable.length > 0) {
+                const capLabel = apCapable.length === allCards.length
+                    ? `All ${apCapable.length} card(s) support AP mode`
+                    : `${apCapable.length}/${allCards.length} card(s) support AP mode`;
+                const nonLine = nonCapable.length
+                    ? `<div style="color:#8b949e;font-size:0.85em">No AP: ${nonCapable.join(', ')}</div>`
+                    : '';
+                banners += `<div class="hostap-banner" style="background:#0d1117;border:1px solid #21262d;color:#8b949e">
+                    <strong style="color:#3fb950">${capLabel}.</strong>
+                    <div style="font-size:0.85em">AP-capable: ${apCapable.join(', ')}</div>
+                    ${nonLine}
+                </div>`;
+            }
+
             const lazyHint = lazyPending
                 ? '<div style="color:#d29922;font-size:0.85em;margin-top:6px">AP is confirmed and will start automatically when the card becomes available, and on every reboot.</div>'
                 : lazyEnabled && !active

@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Vasili Helper</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+    font-family: 'SF Mono','Fira Code','Consolas',monospace;
+    background:#0d1117; color:#c9d1d9;
+    min-height:100vh; padding:16px; font-size:13px;
+}
+.container { max-width:900px; margin:0 auto; }
+.nav { display:flex; justify-content:space-between; align-items:center; margin-bottom:24px; }
+.nav h1 { color:#58a6ff; font-size:1.4em; }
+.nav .public-ip { color:#8b949e; font-size:0.9em; }
+.section {
+    background:#161b22; border:1px solid #30363d;
+    border-radius:6px; padding:16px; margin-bottom:16px;
+}
+.section h2 {
+    font-size:0.95em; text-transform:uppercase; letter-spacing:0.05em;
+    color:#8b949e; margin-bottom:14px;
+    border-bottom:1px solid #21262d; padding-bottom:8px;
+}
+.badge { font-size:0.75em; padding:2px 6px; border-radius:3px;
+        font-weight:bold; text-transform:uppercase; }
+.badge-up { background:#23863533; color:#3fb950; }
+.badge-down { background:#f8514933; color:#f85149; }
+.badge-idle { background:#30363d; color:#8b949e; }
+.row { display:flex; align-items:center; gap:10px; padding:6px 0; }
+.row.bordered { border-bottom:1px solid #21262d; }
+.row.bordered:last-child { border-bottom:none; }
+.row .label { flex:1; }
+.row .label .name { color:#c9d1d9; }
+.row .label .desc { color:#8b949e; font-size:0.85em; }
+.switch { position:relative; width:40px; height:22px; flex-shrink:0; }
+.switch input { opacity:0; width:0; height:0; }
+.switch .slider {
+    position:absolute; cursor:pointer; top:0; left:0; right:0; bottom:0;
+    background:#30363d; border-radius:22px; transition:0.3s;
+}
+.switch .slider:before {
+    position:absolute; content:""; height:16px; width:16px;
+    left:3px; bottom:3px; background:#8b949e;
+    border-radius:50%; transition:0.3s;
+}
+.switch input:checked + .slider { background:#238636; }
+.switch input:checked + .slider:before { transform:translateX(18px); background:#fff; }
+input[type="text"], input[type="password"], textarea, select {
+    width:100%; background:#0d1117; border:1px solid #30363d;
+    border-radius:4px; color:#c9d1d9; padding:5px 8px;
+    font-family:inherit; font-size:0.9em;
+}
+input:focus, textarea:focus, select:focus { outline:none; border-color:#58a6ff; }
+.cfg-field { display:flex; align-items:flex-start; gap:12px; padding:6px 0; }
+.cfg-key { min-width:160px; color:#c9d1d9; font-weight:bold; padding-top:4px; }
+.cfg-input-wrap { flex:1; }
+.cfg-desc { color:#484f58; font-size:0.8em; margin-top:2px; }
+.btn {
+    padding:6px 14px; background:#21262d; border:1px solid #30363d;
+    color:#c9d1d9; border-radius:4px; cursor:pointer;
+    font-family:inherit; font-size:0.85em;
+}
+.btn:hover { background:#30363d; }
+.btn.primary { background:#238636; border-color:#238636; color:#fff; }
+.btn.primary:hover { background:#2ea043; }
+.btn.danger { background:#da3633; border-color:#da3633; color:#fff; }
+.action-bar { display:flex; gap:8px; margin-top:12px; }
+.banner {
+    padding:8px 12px; border-radius:6px; margin-bottom:10px;
+    font-size:0.9em; line-height:1.5;
+}
+.banner code { background:#00000044; padding:1px 4px; border-radius:3px; }
+.banner-error { background:#2c0e0e; border:1px solid #f8514944; color:#f8d7d3; }
+.banner-warn { background:#2c220e; border:1px solid #d2992244; color:#efe1c1; }
+.banner-info { background:#0d1117; border:1px solid #21262d; color:#8b949e; }
+.toast {
+    position:fixed; bottom:20px; right:20px;
+    background:#238636; color:#fff; padding:10px 16px;
+    border-radius:6px; font-size:0.9em; z-index:200;
+    opacity:0; transition:opacity 0.3s;
+}
+.toast.show { opacity:1; }
+.toast.error { background:#da3633; }
+pre {
+    background:#0d1117; border:1px solid #21262d; border-radius:4px;
+    padding:10px; white-space:pre-wrap; word-break:break-all;
+    color:#c9d1d9; font-size:0.85em; max-height:300px; overflow-y:auto;
+}
+table { width:100%; border-collapse:collapse; font-size:0.85em; }
+th, td { text-align:left; padding:6px 8px; border-bottom:1px solid #21262d; }
+th { color:#8b949e; font-weight:normal; text-transform:uppercase;
+     letter-spacing:0.05em; font-size:0.8em; }
+.status-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:8px; }
+.status-card { background:#0d1117; border:1px solid #21262d; border-radius:6px; padding:10px; }
+.status-card .name { font-size:0.8em; color:#8b949e; text-transform:uppercase; }
+.status-card .value { color:#c9d1d9; font-weight:bold; margin-top:4px; }
+.token-prompt {
+    position:fixed; top:0; left:0; right:0; bottom:0;
+    background:rgba(13,17,23,0.92); display:flex; align-items:center;
+    justify-content:center; z-index:300;
+}
+.token-prompt .box { background:#161b22; padding:20px; border-radius:6px;
+    border:1px solid #30363d; min-width:380px; }
+.token-prompt h3 { color:#58a6ff; margin-bottom:8px; }
+.token-prompt p { color:#8b949e; font-size:0.85em; margin-bottom:12px; }
+.hidden { display:none !important; }
+</style>
+</head>
+<body>
+<div class="container">
+    <div class="nav">
+        <h1>Vasili Helper</h1>
+        <div class="public-ip" id="public-ip">…</div>
+    </div>
+
+    <!-- Status -->
+    <div class="section">
+        <h2>Status</h2>
+        <div class="status-grid" id="status-grid"></div>
+    </div>
+
+    <!-- SSH-on-53 -->
+    <div class="section">
+        <h2>SSH Tunnel (TCP/53)</h2>
+        <div class="row bordered">
+            <div class="label">
+                <div class="name">Enable SSH-on-53</div>
+                <div class="desc">Clients use the <code>dns_port_tunnel</code> stage (SSH path) to bypass captive portals.</div>
+            </div>
+            <label class="switch">
+                <input type="checkbox" id="ssh-enabled"><span class="slider"></span>
+            </label>
+        </div>
+        <div class="action-bar">
+            <button class="btn primary" onclick="applySSH()">Apply</button>
+            <button class="btn" id="ssh-download-btn" onclick="downloadAuth('/api/ssh-client-key','vasili-ssh-client')" disabled>Download client key</button>
+        </div>
+    </div>
+
+    <!-- iodine on UDP/53 -->
+    <div class="section">
+        <h2>iodine (UDP/53 — DNS tunnel)</h2>
+        <div class="banner banner-info">
+            <strong>iodine and WireGuard can run at once.</strong>
+            The DNS-proxy demuxes incoming UDP/53 packets by shape: WireGuard
+            traffic is binary (type byte + reserved zeros) and goes to the WG
+            backend; everything else is parsed as DNS and routed by suffix
+            (<code>iodine_domain</code> vs <code>crack_domain</code>).
+        </div>
+        <div class="row bordered">
+            <div class="label">
+                <div class="name">Enable iodine</div>
+                <div class="desc">DNS-over-DNS tunnel for the <code>dns_tunnel</code> stage. Requires an NS-delegated subdomain.</div>
+            </div>
+            <label class="switch">
+                <input type="checkbox" id="iodine-enabled"><span class="slider"></span>
+            </label>
+        </div>
+        <div class="cfg-field">
+            <div class="cfg-key">Domain</div>
+            <div class="cfg-input-wrap">
+                <input type="text" id="iodine-domain" placeholder="t.example.com">
+                <div class="cfg-desc">Subdomain delegated (NS record) to this host's public IP. Must be disjoint from the crack-server domain.</div>
+            </div>
+        </div>
+        <div class="cfg-field">
+            <div class="cfg-key">Password</div>
+            <div class="cfg-input-wrap"><input type="text" id="iodine-password"></div>
+        </div>
+        <div class="cfg-field">
+            <div class="cfg-key">Subnet</div>
+            <div class="cfg-input-wrap"><input type="text" id="iodine-subnet" value="10.53.53.1/24"></div>
+        </div>
+        <div class="action-bar">
+            <button class="btn primary" onclick="applyIodine()">Apply</button>
+        </div>
+    </div>
+
+    <!-- WireGuard on UDP/53 -->
+    <div class="section">
+        <h2>WireGuard (UDP/53 — VPN)</h2>
+        <div class="row bordered">
+            <div class="label">
+                <div class="name">Enable WireGuard</div>
+                <div class="desc">Encrypted VPN tunnel for the <code>dns_port_tunnel</code> stage (WG path). No DNS delegation needed — the proxy matches by packet shape.</div>
+            </div>
+            <label class="switch">
+                <input type="checkbox" id="wg-enabled"><span class="slider"></span>
+            </label>
+        </div>
+        <div class="cfg-field">
+            <div class="cfg-key">Subnet</div>
+            <div class="cfg-input-wrap"><input type="text" id="wg-subnet" value="10.53.1.0/24"></div>
+        </div>
+        <div class="cfg-field">
+            <div class="cfg-key">Server pubkey</div>
+            <div class="cfg-input-wrap"><pre id="wg-server-pub">(generated on first Apply)</pre></div>
+        </div>
+        <div class="action-bar">
+            <button class="btn primary" onclick="applyWireguard()">Apply</button>
+            <button class="btn" id="wg-download-btn" onclick="downloadAuth('/api/wg-client-config','wg-vasili-client.conf')">Download WireGuard client config</button>
+        </div>
+    </div>
+
+    <!-- Crack server -->
+    <div class="section">
+        <h2>PMKID Crack Server</h2>
+        <div id="crack-banner"></div>
+        <div class="row bordered">
+            <div class="label">
+                <div class="name">Enable crack server</div>
+                <div class="desc">Receives DNS-encoded PMKID hashes and runs hashcat (or python fallback).</div>
+            </div>
+            <label class="switch"><input type="checkbox" id="crack-enabled"><span class="slider"></span></label>
+        </div>
+        <div class="cfg-field">
+            <div class="cfg-key">Domain</div>
+            <div class="cfg-input-wrap"><input type="text" id="crack-domain" placeholder="crack.example.com"></div>
+        </div>
+        <div class="cfg-field">
+            <div class="cfg-key">Secret</div>
+            <div class="cfg-input-wrap">
+                <input type="text" id="crack-secret" placeholder="(auto-generated on enable)">
+                <div class="cfg-desc">Shared auth token, sent in the DNS query path by clients.</div>
+            </div>
+        </div>
+        <div class="cfg-field">
+            <div class="cfg-key">Wordlist</div>
+            <div class="cfg-input-wrap">
+                <input type="text" id="crack-wordlist">
+                <div class="cfg-desc"><span id="wordlist-state">…</span></div>
+            </div>
+        </div>
+        <div class="action-bar">
+            <button class="btn primary" onclick="applyCrack()">Apply</button>
+            <button class="btn" id="rockyou-btn" onclick="downloadWordlist()">Download rockyou.txt</button>
+        </div>
+
+        <h2 style="margin-top:18px">Recent crack jobs</h2>
+        <table id="jobs-table">
+            <thead><tr><th>Job</th><th>Status</th><th>Progress</th><th>Password</th><th>Submitted</th></tr></thead>
+            <tbody></tbody>
+        </table>
+    </div>
+
+    <!-- Client config -->
+    <div class="section">
+        <h2>Client Config (paste into vasili)</h2>
+        <pre id="client-config">…</pre>
+        <div class="action-bar">
+            <button class="btn" onclick="copyClientConfig()">Copy to clipboard</button>
+        </div>
+    </div>
+</div>
+
+<div class="toast" id="toast"></div>
+<div class="token-prompt" id="token-prompt">
+    <div class="box">
+        <h3>Helper auth token</h3>
+        <p>Paste the bearer token printed in <code>docker logs</code> on first boot (or the value of <code>HELPER_TOKEN</code>).</p>
+        <input type="password" id="token-input" placeholder="bearer token">
+        <div class="action-bar">
+            <button class="btn primary" onclick="saveToken()">Continue</button>
+        </div>
+    </div>
+</div>
+
+<script src="/static/helper.js"></script>
+</body>
+</html>

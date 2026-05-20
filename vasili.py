@@ -26,7 +26,6 @@ from flask import Flask, jsonify, render_template, request
 from flask_socketio import SocketIO, emit
 from pymongo import MongoClient, DESCENDING
 from pymongo.errors import ConnectionFailure, OperationFailure
-from pyarchops_dnsmasq import dnsmasq
 from datetime import datetime
 
 from config import VasiliConfig, apply_logging_config, load_config
@@ -592,6 +591,99 @@ class CardLeaseStore:
             logger.error(f'Failed to clear leases: {e}')
 
 
+class DnsmasqDHCP:
+    """Run dnsmasq as a subprocess to serve DHCP on a single interface.
+
+    Replaces ``pyarchops_dnsmasq.dnsmasq.DHCP`` (which never actually
+    existed in upstream — that module only ships ``apply``/``suitable``
+    Salt helpers, so the old import path failed at runtime and silently
+    broke both HostAP and the ethernet bridge). DNS is disabled
+    (``--port=0``) so multiple instances coexist with the system
+    dnsmasq as long as each binds a distinct ``--interface``.
+    """
+
+    def __init__(self, interface: str, dhcp_range: tuple,
+                 subnet_mask: str = '255.255.255.0',
+                 router: Optional[str] = None,
+                 dns: str = '8.8.8.8'):
+        self.interface = interface
+        self.dhcp_range = dhcp_range
+        self.subnet_mask = subnet_mask
+        if router is None:
+            octets = dhcp_range[0].split('.')
+            if len(octets) == 4:
+                router = '.'.join(octets[:3] + ['1'])
+        self.router = router
+        self.dns = dns
+        self._process: Optional[subprocess.Popen] = None
+        self._pid_file = f'/tmp/vasili-dnsmasq-{interface}.pid'
+        self._lease_file = f'/tmp/vasili-dnsmasq-{interface}.leases'
+
+    def start(self):
+        """Launch dnsmasq. Raises RuntimeError if it exits immediately."""
+        self._kill_stale()
+
+        cmd = [
+            'dnsmasq',
+            '--keep-in-foreground',
+            '--bind-interfaces',
+            f'--interface={self.interface}',
+            '--except-interface=lo',
+            '--port=0',
+            f'--dhcp-range={self.dhcp_range[0]},{self.dhcp_range[1]},'
+            f'{self.subnet_mask},12h',
+            f'--dhcp-leasefile={self._lease_file}',
+            f'--pid-file={self._pid_file}',
+        ]
+        if self.router:
+            cmd.append(f'--dhcp-option=3,{self.router}')
+        if self.dns:
+            cmd.append(f'--dhcp-option=6,{self.dns}')
+
+        self._process = subprocess.Popen(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        time.sleep(0.5)
+        if self._process.poll() is not None:
+            stdout, stderr = self._process.communicate()
+            msg = (stderr or stdout or b'').decode(errors='replace').strip()
+            self._process = None
+            raise RuntimeError(
+                f'dnsmasq exited immediately: {msg[:300] or "no output"}')
+
+    def stop(self):
+        if self._process and self._process.poll() is None:
+            try:
+                self._process.terminate()
+                try:
+                    self._process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    self._process.kill()
+                    self._process.wait()
+            except Exception as e:
+                logger.warning(
+                    f'dnsmasq stop error on {self.interface}: {e}')
+        self._process = None
+
+    def _kill_stale(self):
+        """Reap a stale dnsmasq from a previous crash on this interface."""
+        try:
+            with open(self._pid_file) as f:
+                pid = int(f.read().strip())
+        except (FileNotFoundError, ValueError, OSError):
+            return
+        try:
+            os.kill(pid, 15)
+        except OSError:
+            return
+        for _ in range(10):
+            try:
+                os.kill(pid, 0)
+            except OSError:
+                return
+            time.sleep(0.1)
+
+
 class NetworkBridge:
     def __init__(self, wifi_interface: str, ethernet_interface: str):
         self.wifi_interface = wifi_interface
@@ -766,7 +858,7 @@ class NetworkBridge:
                 return False
 
             # Start DHCP server
-            self.dhcp_server = dnsmasq.DHCP(
+            self.dhcp_server = DnsmasqDHCP(
                 interface=self.ethernet_interface,
                 dhcp_range=('192.168.10.50', '192.168.10.150'),
                 subnet_mask='255.255.255.0',
@@ -991,6 +1083,7 @@ class HostAP:
             capture_output=True, text=True,
         )
         if result.returncode != 0 and 'File exists' not in result.stderr:
+            self.last_error = f'interface setup failed: {result.stderr.strip()}'
             logger.error(f'HostAP: failed to assign IP: {result.stderr}')
             return False
         self._ip_configured = True
@@ -1000,6 +1093,7 @@ class HostAP:
             capture_output=True, text=True,
         )
         if result.returncode != 0:
+            self.last_error = f'interface setup failed: {result.stderr.strip()}'
             logger.error(f'HostAP: failed to bring up interface: {result.stderr}')
             return False
         return True
@@ -1094,15 +1188,20 @@ class HostAP:
     def _start_dhcp(self) -> bool:
         """Start DHCP server on the AP interface."""
         try:
-            self._dhcp_server = dnsmasq.DHCP(
+            self._dhcp_server = DnsmasqDHCP(
                 interface=self.interface,
                 dhcp_range=self.DHCP_RANGE,
                 subnet_mask='255.255.255.0',
+                router=self.AP_IP,
             )
             self._dhcp_server.start()
             logger.info('HostAP: DHCP server started')
             return True
         except Exception as e:
+            # Carry the failure context up to WifiManager so the UI can
+            # show "DHCP failed: ..." instead of the misleading
+            # "hostapd failed to start" (hostapd actually launched).
+            self.last_error = f'DHCP failed: {e}'
             logger.error(f'HostAP: failed to start DHCP: {e}')
             return False
 
@@ -3233,6 +3332,39 @@ class WifiManager:
         # Register card-return hook for lazy hostap
         self.card_manager.on_card_returned(self._on_card_returned_for_hostap)
 
+        # Probe each card for AP-mode support at startup. The result is
+        # also re-checked live in get_hostap_status, but logging it once
+        # upfront makes "why can't I start HostAP?" answerable from the
+        # journal without opening the UI.
+        self._log_hostap_capabilities()
+
+    def _log_hostap_capabilities(self):
+        """Log per-card AP-mode support so missing capability is obvious."""
+        cards = self.card_manager.get_all_cards()
+        if not cards:
+            logger.warning('HostAP capability check: no WiFi cards present')
+            return
+        capable = []
+        non_capable = []
+        for c in cards:
+            if HostAP.interface_supports_ap(c.interface):
+                capable.append(c.interface)
+            else:
+                non_capable.append(c.interface)
+        if capable:
+            logger.info(
+                f'HostAP capability: {len(capable)}/{len(cards)} cards support AP mode '
+                f'(capable: {", ".join(capable)}'
+                + (f'; not capable: {", ".join(non_capable)}' if non_capable else '')
+                + ')'
+            )
+        else:
+            logger.warning(
+                'HostAP capability: no installed card supports AP mode '
+                f'(checked: {", ".join(c.interface for c in cards)}). '
+                'HostAP will not be startable until an AP-capable adapter is plugged in.'
+            )
+
     def _load_connection_modules(self) -> list[ConnectionModule]:
         config = get_config()
         modules_dir = os.path.join(os.path.dirname(__file__), 'modules')
@@ -3459,16 +3591,16 @@ class WifiManager:
             self._save_hostap_config(conf)
             return {'success': True, 'interface': interface, 'permanent': False}
         else:
-            # Capture the most informative line of hostapd output before
-            # tearing down the instance, so the UI can show something
-            # better than "check logs".
+            # Capture the failure reason set by whichever sub-step bailed
+            # (hostapd / DHCP / interface IP) so the UI can show the real
+            # cause instead of always blaming hostapd.
             detail = getattr(self.hostap, 'last_error', None)
             # fire_callbacks=False prevents clear_hostap_card from
             # triggering _on_card_returned_for_hostap which would
             # immediately re-seize the card in an infinite loop.
             self.card_manager.clear_hostap_card(fire_callbacks=False)
             self.hostap = None
-            err = f'hostapd failed: {detail}' if detail else 'hostapd failed to start'
+            err = detail or 'HostAP failed to start'
             self._hostap_last_error = err
             return {'success': False, 'error': err, 'permanent': True}
 
@@ -3495,27 +3627,40 @@ class WifiManager:
         return {'success': True}
 
     def get_hostap_status(self) -> dict:
+        # Capability info has to be included in *both* branches — when AP
+        # is active the UI still asks for status, and an empty
+        # ap_capable_interfaces would trigger the misleading "no AP card"
+        # banner over a working AP.
+        # Scanning card is excluded because it's reserved for scanning and
+        # is never offered as a HostAP candidate; counting it makes the
+        # UI's X/Y display nonsensical (e.g. 4/3).
+        scanning = self.card_manager.get_scanning_card()
+        candidate_cards = [
+            c for c in self.card_manager.get_all_cards() if c != scanning
+        ]
+        ap_capable = [
+            c.interface for c in candidate_cards
+            if HostAP.interface_supports_ap(c.interface)
+        ]
+        capability = {
+            'ap_capable_interfaces': ap_capable,
+            'hostapd_installed': HostAP.check_hostapd_installed(),
+        }
+
         if self.hostap and self.hostap.is_active:
             status = self.hostap.get_status()
             status['lazy_enabled'] = True  # Must be enabled if running
             status['lazy_pending'] = False
             status['last_error'] = None
+            status.update(capability)
             return status
         saved = self._load_hostap_config()
-        # Report which of the available cards can run AP mode so the UI
-        # can explain "no AP-capable card" cases without the user having
-        # to read iw output.
-        ap_capable = [
-            c.interface for c in self.card_manager.get_all_cards()
-            if HostAP.interface_supports_ap(c.interface)
-        ]
         return {
             'is_active': False,
             'lazy_enabled': bool(saved.get('enabled')),
             'lazy_pending': self._hostap_lazy_pending,
             'last_error': self._hostap_last_error,
-            'ap_capable_interfaces': ap_capable,
-            'hostapd_installed': HostAP.check_hostapd_installed(),
+            **capability,
         }
 
     def _load_hostap_config(self) -> dict:
