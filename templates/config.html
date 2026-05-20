@@ -165,6 +165,20 @@
         }
         .save-indicator.show { opacity: 1; }
 
+        .hostap-banner {
+            padding: 8px 12px; border-radius: 6px; margin-bottom: 10px;
+            font-size: 0.9em; line-height: 1.5;
+        }
+        .hostap-banner code { background: #00000044; padding: 1px 4px; border-radius: 3px; }
+        .banner-error {
+            background: #2c0e0e; border: 1px solid #f8514944; color: #f8d7d3;
+        }
+        .banner-error strong { color: #f85149; }
+        .banner-warn {
+            background: #2c220e; border: 1px solid #d2992244; color: #efe1c1;
+        }
+        .banner-warn strong { color: #d29922; }
+
         .toast {
             position: fixed; bottom: 20px; right: 20px;
             background: #238636; color: #fff; padding: 10px 16px;
@@ -313,6 +327,9 @@
             const active = s.is_active;
             const lazyEnabled = s.lazy_enabled || false;
             const lazyPending = s.lazy_pending || false;
+            const lastError = s.last_error || '';
+            const apCapable = s.ap_capable_interfaces || [];
+            const hostapdInstalled = s.hostapd_installed !== false; // default true
             const section = el('hostap-section');
 
             const ssid = c.ssid || 'Vasili-AP';
@@ -321,9 +338,17 @@
             const channel = c.channel || 6;
             const iface = c.interface || '';
 
-            const ifaceOptions = hostapCards.map(card =>
-                `<option value="${card.interface}" ${card.interface===iface || card.interface===(s.interface||'') ? 'selected' : ''}>${card.interface}</option>`
-            ).join('');
+            // Mark interfaces that can't do AP so the user can spot why
+            // a chosen card refuses to start the AP.
+            const ifaceOptions = hostapCards.map(card => {
+                const supports = card.supports_ap;
+                const label = supports
+                    ? card.interface
+                    : card.interface + '  ✗ no AP support';
+                const sel = (card.interface===iface || card.interface===(s.interface||''))
+                    ? 'selected' : '';
+                return `<option value="${card.interface}" ${sel}>${label}</option>`;
+            }).join('');
 
             let statusBadge;
             if (active) {
@@ -332,6 +357,8 @@
                 statusBadge = '<span class="badge" style="background:#d29922;color:#000">WAITING FOR CARD</span>';
             } else if (lazyEnabled) {
                 statusBadge = '<span class="badge" style="background:#1f6feb;color:#fff">CONFIRMED</span>';
+            } else if (lastError) {
+                statusBadge = '<span class="badge badge-down">FAILED</span>';
             } else {
                 statusBadge = '<span class="badge badge-idle">STOPPED</span>';
             }
@@ -341,8 +368,6 @@
                 : active ? '<span style="color:#d29922;font-size:0.85em;margin-left:8px">no upstream (no active bridge)</span>' : '';
 
             const disabled = active ? 'disabled' : '';
-
-            // Confirm/Disable button for lazy mode (replaced by Always Start toggle)
 
             // One-shot start/stop button
             let actionBtn = '';
@@ -354,6 +379,35 @@
                     onclick="startHostAP()">Start AP</button>`;
             }
 
+            // Persistent banners explain *why* the AP isn't running.
+            // Order: most actionable first.
+            let banners = '';
+            if (!hostapdInstalled) {
+                banners += `<div class="hostap-banner banner-error">
+                    <strong>hostapd is not installed.</strong>
+                    Install it with <code>sudo apt install hostapd</code> before enabling the AP.
+                </div>`;
+            } else if (apCapable.length === 0) {
+                banners += `<div class="hostap-banner banner-error">
+                    <strong>No WiFi card in this device supports AP mode.</strong>
+                    <code>iw phy &lt;phy&gt; info</code> does not list <code>AP</code> in
+                    "Supported interface modes" for any card. The AP can't be started until
+                    you plug in an AP-capable dongle.
+                </div>`;
+            } else if (lastError && !active) {
+                banners += `<div class="hostap-banner banner-error">
+                    <strong>Last start failed:</strong> ${lastError}
+                    <button class="btn btn-sm" style="margin-left:10px" onclick="clearHostAPError()">Dismiss</button>
+                </div>`;
+            }
+            if (apCapable.length > 0 && iface && !apCapable.includes(iface)) {
+                banners += `<div class="hostap-banner banner-warn">
+                    <strong>${iface} does not support AP mode.</strong>
+                    AP-capable cards: ${apCapable.join(', ') || '(none)'}.
+                    Pick a supported one or switch to <em>Auto</em> below.
+                </div>`;
+            }
+
             const lazyHint = lazyPending
                 ? '<div style="color:#d29922;font-size:0.85em;margin-top:6px">AP is confirmed and will start automatically when the card becomes available, and on every reboot.</div>'
                 : lazyEnabled && !active
@@ -361,19 +415,24 @@
                 : '';
 
             const alwaysStartChecked = lazyEnabled || active ? 'checked' : '';
+            // Disable Always Start if there is no AP-capable card so we
+            // don't queue a permanent failure for the user.
+            const alwaysStartDisabled = (apCapable.length === 0 || !hostapdInstalled)
+                ? 'disabled' : '';
 
             section.innerHTML = `
                 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
                     <div>${statusBadge}${upstreamInfo}</div>
                     <div style="display:flex">${actionBtn}</div>
                 </div>
+                ${banners}
                 <div class="toggle-row" style="margin-bottom:10px">
                     <div class="toggle-label">
                         <div class="name">Always Start</div>
                         <div class="desc">Auto-start AP on boot using any available card. Reclaims card when free.</div>
                     </div>
                     <label class="switch">
-                        <input type="checkbox" ${alwaysStartChecked} onchange="toggleAlwaysStart(this.checked)">
+                        <input type="checkbox" ${alwaysStartChecked} ${alwaysStartDisabled} onchange="toggleAlwaysStart(this.checked)">
                         <span class="slider"></span>
                     </label>
                 </div>
@@ -384,10 +443,10 @@
                         <div class="cfg-input-wrap">
                             <select id="ha-iface" ${disabled} onchange="saveHostAPField()"
                                 style="width:100%;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;border-radius:4px;padding:5px 8px;font-family:inherit">
-                                <option value="">Auto (last available)</option>
+                                <option value="">Auto (any AP-capable card)</option>
                                 ${ifaceOptions}
                             </select>
-                            <div class="cfg-desc">Card to use as access point (removed from connection pool)</div>
+                            <div class="cfg-desc">Card to use as access point (removed from connection pool). Cards marked ✗ don't support AP mode.</div>
                         </div>
                     </div>
                     <div class="cfg-field">
@@ -400,7 +459,7 @@
                     <div class="cfg-field">
                         <span class="cfg-key">Security</span>
                         <div class="cfg-input-wrap">
-                            <select id="ha-security" ${disabled} onchange="saveHostAPField();renderHostAP()"
+                            <select id="ha-security" ${disabled} onchange="onSecurityChange(this.value)"
                                 style="width:100%;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;border-radius:4px;padding:5px 8px;font-family:inherit">
                                 <option value="open" ${security==='open'?'selected':''}>Open</option>
                                 <option value="wpa2" ${security==='wpa2'?'selected':''}>WPA2</option>
@@ -423,13 +482,14 @@
                         </div>
                     </div>
                 </div>`;
+        }
 
-            // Update password visibility based on current security select
-            const secSel = document.getElementById('ha-security');
-            if (secSel) {
-                const pwRow = document.getElementById('ha-pw-row');
-                if (pwRow) pwRow.style.display = secSel.value === 'open' ? 'none' : '';
-            }
+        // Security change without a full re-render — avoids stomping
+        // on whatever the user might still be typing elsewhere.
+        function onSecurityChange(value) {
+            saveHostAPField();
+            const pwRow = document.getElementById('ha-pw-row');
+            if (pwRow) pwRow.style.display = value === 'open' ? 'none' : '';
         }
 
         function getHostAPFormValues() {
@@ -534,6 +594,12 @@
                     toast(d.success ? 'HostAP disabled' : (d.error || 'Failed to disable'));
                     loadHostAP();
                 });
+        }
+
+        function clearHostAPError() {
+            fetch('/api/hostap/clear-error', {method: 'POST'})
+                .then(r => r.json())
+                .then(() => loadHostAP());
         }
 
         function loadModules() {

@@ -860,6 +860,10 @@ class HostAP:
         self._upstream_interface: Optional[str] = None
         self._ip_configured = False
         self.is_active = False
+        # Captured failure reason from the most recent start attempt —
+        # surfaced through ``WifiManager._hostap_last_error`` so the UI
+        # can explain failures without sending users into the logs.
+        self.last_error: Optional[str] = None
 
     # ------------------------------------------------------------------
     # Pre-flight checks
@@ -869,18 +873,28 @@ class HostAP:
     def check_hostapd_installed() -> bool:
         return shutil.which('hostapd') is not None
 
-    def _get_phy(self) -> Optional[str]:
-        """Get the phy name for the interface (e.g. phy0)."""
-        phy_path = f'/sys/class/net/{self.interface}/phy80211/name'
+    @staticmethod
+    def _phy_for(interface: str) -> Optional[str]:
+        """Return the phy name (e.g. ``phy0``) backing an interface, or None."""
+        phy_path = f'/sys/class/net/{interface}/phy80211/name'
         try:
             with open(phy_path) as f:
                 return f.read().strip()
         except Exception:
             return None
 
-    def check_ap_support(self) -> bool:
-        """Check if the interface supports AP mode."""
-        phy = self._get_phy()
+    def _get_phy(self) -> Optional[str]:
+        return self._phy_for(self.interface)
+
+    @staticmethod
+    def interface_supports_ap(interface: str) -> bool:
+        """Return True if ``interface`` lists ``AP`` in its phy's modes.
+
+        Callable without an instance so ``start_hostap`` can pre-flight
+        before reserving the card — see notes on the retry loop in
+        ``WifiManager._on_card_returned_for_hostap``.
+        """
+        phy = HostAP._phy_for(interface)
         if not phy:
             return False
         try:
@@ -903,6 +917,10 @@ class HostAP:
             return False
         except Exception:
             return False
+
+    def check_ap_support(self) -> bool:
+        """Check if this instance's interface supports AP mode."""
+        return self.interface_supports_ap(self.interface)
 
     # ------------------------------------------------------------------
     # hostapd config generation
@@ -1009,15 +1027,52 @@ class HostAP:
             # Give hostapd a moment to start
             time.sleep(2)
             if self._hostapd_process.poll() is not None:
-                _, stderr = self._hostapd_process.communicate()
-                logger.error(f'HostAP: hostapd exited: {stderr.decode()[:200]}')
+                stdout, stderr = self._hostapd_process.communicate()
+                # hostapd writes most of its diagnostics to stdout; fall
+                # back to stderr if stdout is empty.
+                msg = (stdout or b'').decode(errors='replace').strip()
+                if not msg:
+                    msg = (stderr or b'').decode(errors='replace').strip()
+                self.last_error = self._summarise_hostapd_error(msg) or 'hostapd exited immediately'
+                logger.error(f'HostAP: hostapd exited: {msg[:400]}')
                 self._hostapd_process = None
                 return False
             logger.info(f'HostAP: hostapd started (pid {self._hostapd_process.pid})')
             return True
+        except FileNotFoundError:
+            self.last_error = 'hostapd binary not found'
+            logger.error('HostAP: hostapd binary not found in PATH')
+            return False
         except Exception as e:
+            self.last_error = f'failed to launch hostapd: {e}'
             logger.error(f'HostAP: failed to start hostapd: {e}')
             return False
+
+    @staticmethod
+    def _summarise_hostapd_error(output: str) -> Optional[str]:
+        """Pick the most informative line out of hostapd's output.
+
+        hostapd prints a stack of messages on failure — the last
+        ``ERROR``/``Failed``/``not supported`` line is usually the
+        actionable one. Falls back to the last non-empty line.
+        """
+        if not output:
+            return None
+        useful = None
+        for line in output.splitlines():
+            s = line.strip()
+            if not s:
+                continue
+            low = s.lower()
+            if ('error' in low or 'failed' in low or 'not supported' in low
+                    or 'unable' in low or 'could not' in low):
+                useful = s
+        if useful:
+            # Trim hostapd's wlanN: prefix for readability.
+            return useful.split(':', 2)[-1].strip()[:200] or useful[:200]
+        # Last non-blank line as fallback
+        lines = [s.strip() for s in output.splitlines() if s.strip()]
+        return lines[-1][:200] if lines else None
 
     def _stop_hostapd(self):
         """Stop hostapd process."""
@@ -3164,6 +3219,9 @@ class WifiManager:
         self.hostap: Optional[HostAP] = None
         self._hostap_lazy_pending = False  # True when AP is confirmed but waiting for card
         self._hostap_claiming = False  # Re-entrancy guard for card-returned callback
+        # Last permanent failure reason — shown in /api/hostap/status so
+        # the UI can explain why auto-start is off.
+        self._hostap_last_error: Optional[str] = None
 
         # Ethernet mode: 'management' (default — static IP, DHCP, NAT)
         #                 'pool' (available for future ethernet-based modules)
@@ -3329,23 +3387,56 @@ class WifiManager:
     # ------------------------------------------------------------------
 
     def start_hostap(self, conf: dict) -> dict:
-        """Start the host access point."""
+        """Start the host access point.
+
+        Returns ``{'success': bool, 'error': str, 'permanent': bool}``.
+        A ``permanent`` error (missing hostapd, no AP-capable card)
+        means there is no point retrying — callers must NOT set
+        ``_hostap_lazy_pending`` on these, otherwise the card-return
+        callback will grab and release every freed card forever.
+        """
         if self.hostap and self.hostap.is_active:
-            return {'success': False, 'error': 'HostAP already running'}
+            return {'success': False, 'error': 'HostAP already running',
+                    'permanent': False}
 
         if not HostAP.check_hostapd_installed():
-            return {'success': False, 'error': 'hostapd is not installed'}
+            return {'success': False, 'error': 'hostapd is not installed',
+                    'permanent': True}
 
         interface = conf.get('interface')
         if not interface:
+            # Pick an AP-capable connection card (prefer the *last* one,
+            # matching the old behaviour, but only consider supported ones).
             conn_cards = self.card_manager.get_connection_cards()
             if not conn_cards:
-                return {'success': False, 'error': 'No cards available for HostAP'}
-            interface = conn_cards[-1].interface
+                return {'success': False, 'error': 'No cards available for HostAP',
+                        'permanent': False}
+            capable = [c for c in conn_cards
+                       if HostAP.interface_supports_ap(c.interface)]
+            if not capable:
+                return {
+                    'success': False,
+                    'error': ('No connection card supports AP mode '
+                              '(check `iw phy ... info` → Supported interface modes)'),
+                    'permanent': True,
+                }
+            interface = capable[-1].interface
+
+        # Pre-flight AP-mode support BEFORE reserving the card.
+        # Reserving first and failing later briefly steals the card from
+        # the connection pool every time the lazy retry runs, which is
+        # what made HostAP look like a "scheduled" network rather than a
+        # permanent reservation.
+        if not HostAP.interface_supports_ap(interface):
+            err = f'{interface} does not support AP mode'
+            self._hostap_last_error = err
+            return {'success': False, 'error': err, 'permanent': True}
 
         card = self.card_manager.set_hostap_card(interface)
         if not card:
-            return {'success': False, 'error': f'Cannot reserve {interface} (busy or scanning card)'}
+            return {'success': False,
+                    'error': f'Cannot reserve {interface} (busy or scanning card)',
+                    'permanent': False}
 
         # Determine upstream: use active bridge's wifi interface
         upstream = None
@@ -3364,15 +3455,22 @@ class WifiManager:
             self.status['hostap_active'] = True
             self.status['hostap_ssid'] = self.hostap.ssid
             self._hostap_lazy_pending = False
+            self._hostap_last_error = None
             self._save_hostap_config(conf)
-            return {'success': True, 'interface': interface}
+            return {'success': True, 'interface': interface, 'permanent': False}
         else:
+            # Capture the most informative line of hostapd output before
+            # tearing down the instance, so the UI can show something
+            # better than "check logs".
+            detail = getattr(self.hostap, 'last_error', None)
             # fire_callbacks=False prevents clear_hostap_card from
             # triggering _on_card_returned_for_hostap which would
             # immediately re-seize the card in an infinite loop.
             self.card_manager.clear_hostap_card(fire_callbacks=False)
             self.hostap = None
-            return {'success': False, 'error': 'hostapd failed to start (check AP support and logs)'}
+            err = f'hostapd failed: {detail}' if detail else 'hostapd failed to start'
+            self._hostap_last_error = err
+            return {'success': False, 'error': err, 'permanent': True}
 
     def stop_hostap(self) -> dict:
         if not self.hostap or not self.hostap.is_active:
@@ -3381,6 +3479,8 @@ class WifiManager:
         self.hostap = None
         self.status['hostap_active'] = False
         self.status['hostap_ssid'] = None
+        # A manual stop is not a failure — drop any stale error.
+        self._hostap_last_error = None
 
         # Set lazy pending *before* clear_hostap_card so the card-returned
         # callback can immediately re-acquire it if lazy is enabled.
@@ -3399,12 +3499,23 @@ class WifiManager:
             status = self.hostap.get_status()
             status['lazy_enabled'] = True  # Must be enabled if running
             status['lazy_pending'] = False
+            status['last_error'] = None
             return status
         saved = self._load_hostap_config()
+        # Report which of the available cards can run AP mode so the UI
+        # can explain "no AP-capable card" cases without the user having
+        # to read iw output.
+        ap_capable = [
+            c.interface for c in self.card_manager.get_all_cards()
+            if HostAP.interface_supports_ap(c.interface)
+        ]
         return {
             'is_active': False,
             'lazy_enabled': bool(saved.get('enabled')),
             'lazy_pending': self._hostap_lazy_pending,
+            'last_error': self._hostap_last_error,
+            'ap_capable_interfaces': ap_capable,
+            'hostapd_installed': HostAP.check_hostapd_installed(),
         }
 
     def _load_hostap_config(self) -> dict:
@@ -3421,16 +3532,27 @@ class WifiManager:
             return {}
 
     def _save_hostap_config(self, conf: dict):
-        """Save HostAP config to MongoDB."""
+        """Merge ``conf`` into the saved HostAP document.
+
+        This is a **merge**, not a replace. The form posts only the
+        editable fields (interface/ssid/security/password/channel) so a
+        replace would silently drop sticky flags like ``enabled`` that
+        live on the same document — making the settings page appear to
+        reset every time the user touches a field. Callers that want to
+        flip a flag pass only that key, e.g. ``{'enabled': False}``.
+        """
+        if not conf:
+            return
         try:
             config = get_config()
             client = MongoClient(
                 config.database.mongodb_uri, serverSelectionTimeoutMS=2000
             )
             mdb = client[config.database.db_name]
+            update = {f'config.{k}': v for k, v in conf.items()}
             mdb['hostap_config'].update_one(
                 {'_id': 'hostap'},
-                {'$set': {'config': conf}},
+                {'$set': update},
                 upsert=True,
             )
         except Exception as e:
@@ -3446,6 +3568,9 @@ class WifiManager:
         Saves the config with ``enabled: true`` so the AP will start
         automatically when the chosen card is free and on every reboot.
         If the card is available right now the AP starts immediately.
+        A permanent failure (no AP-capable card, hostapd missing) does
+        not queue a lazy retry — that would just thrash a card the
+        kernel can't use for AP mode.
         """
         conf['enabled'] = True
         self._save_hostap_config(conf)
@@ -3459,7 +3584,19 @@ class WifiManager:
         if result.get('success'):
             return {'success': True, 'state': 'running'}
 
-        # Card is busy — queue lazy start
+        if result.get('permanent'):
+            # Clear the saved enabled flag so reboots don't replay the
+            # same failure, and make sure the retry loop is off.
+            self._hostap_lazy_pending = False
+            self._save_hostap_config({'enabled': False})
+            logger.warning(
+                'HostAP cannot start: %s — auto-start disabled',
+                result.get('error', 'unknown error'),
+            )
+            return {'success': False, 'state': 'unsupported',
+                    'error': result.get('error', 'HostAP unavailable')}
+
+        # Transient failure (card busy elsewhere) — queue lazy start
         self._hostap_lazy_pending = True
         logger.info(
             'HostAP confirmed but card unavailable — will start lazily '
@@ -3475,18 +3612,23 @@ class WifiManager:
             self.stop_hostap()
 
         self._hostap_lazy_pending = False
-
-        # Clear enabled flag in saved config
-        saved = self._load_hostap_config()
-        if saved:
-            saved['enabled'] = False
-            self._save_hostap_config(saved)
+        # User explicitly turned it off — clear any sticky error too.
+        self._hostap_last_error = None
+        self._save_hostap_config({'enabled': False})
 
         logger.info('HostAP lazy/auto disabled')
         return {'success': True}
 
     def _on_card_returned_for_hostap(self, card: WifiCard):
-        """Card-return callback: try to claim the card for lazy hostap."""
+        """Card-return callback: try to claim the card for lazy hostap.
+
+        Permanent failures (this interface doesn't support AP mode,
+        hostapd refused) clear the lazy flag so we don't flap the card
+        on every return. Without this, freeing a card during a connect
+        cycle would briefly grab it for a doomed AP start each time —
+        which is what made the AP look like a scheduled connection
+        rather than a permanent reservation.
+        """
         if not self._hostap_lazy_pending:
             return
         # Guard against re-entrancy (start_hostap failure → clear → callback)
@@ -3506,6 +3648,25 @@ class WifiManager:
         if wanted_iface and card.interface != wanted_iface:
             return
 
+        # Pre-flight: if the returned card can't do AP mode, don't even
+        # reserve it. With no wanted_iface this also lets the next
+        # AP-capable card-return succeed instead of every return
+        # thrashing.
+        if not HostAP.interface_supports_ap(card.interface):
+            if wanted_iface:
+                # User chose this specific interface — it will never
+                # work. Stop the retry loop and clear the enabled flag.
+                self._hostap_lazy_pending = False
+                self._save_hostap_config({'enabled': False})
+                self._hostap_last_error = (
+                    f'{card.interface} does not support AP mode'
+                )
+                logger.warning(
+                    'HostAP disabled: %s does not support AP mode',
+                    card.interface,
+                )
+            return
+
         self._hostap_claiming = True
         try:
             logger.info('Card %s now free — attempting lazy HostAP start',
@@ -3518,6 +3679,15 @@ class WifiManager:
             if result.get('success'):
                 self._hostap_lazy_pending = False
                 logger.info('Lazy HostAP started on %s', card.interface)
+            elif result.get('permanent'):
+                # No point retrying — clear the lazy flag and the
+                # saved enabled bit so we stop grabbing cards on return.
+                self._hostap_lazy_pending = False
+                self._save_hostap_config({'enabled': False})
+                logger.warning(
+                    'Lazy HostAP disabled (permanent failure on %s): %s',
+                    card.interface, result.get('error'),
+                )
             else:
                 logger.debug('Lazy HostAP start failed on %s: %s',
                              card.interface, result.get('error'))
@@ -3534,13 +3704,25 @@ class WifiManager:
         result = self.start_hostap(saved)
         if result.get('success'):
             logger.info('HostAP auto-started on boot')
-        else:
-            # Card busy at boot (probably scanning) — queue lazy
-            self._hostap_lazy_pending = True
-            logger.info(
-                'HostAP card unavailable at boot — queued for lazy start: %s',
+            return
+
+        if result.get('permanent'):
+            # Disable in saved config so the next boot doesn't replay
+            # this and so the card-return callback stays off.
+            self._hostap_lazy_pending = False
+            self._save_hostap_config({'enabled': False})
+            logger.warning(
+                'HostAP auto-start disabled at boot (permanent): %s',
                 result.get('error'),
             )
+            return
+
+        # Card busy at boot (probably scanning) — queue lazy
+        self._hostap_lazy_pending = True
+        logger.info(
+            'HostAP card unavailable at boot — queued for lazy start: %s',
+            result.get('error'),
+        )
 
     # ------------------------------------------------------------------
     # Ethernet mode management
@@ -4202,6 +4384,7 @@ def get_cards():
             'current_band': freq_info.get('current_band'),
             'current_channel': freq_info.get('current_channel'),
             'supported_bands': freq_info.get('supported_bands', []),
+            'supports_ap': HostAP.interface_supports_ap(card.interface),
         }
         if card._connected_network:
             card_info['connected_network'] = {
@@ -4509,6 +4692,13 @@ def disable_hostap():
     result = wifi_manager.disable_hostap_lazy()
     emit_status_update()
     return jsonify(result)
+
+
+@app.route('/api/hostap/clear-error', methods=['POST'])
+def clear_hostap_error():
+    """Dismiss the sticky ``last_error`` shown in the status banner."""
+    wifi_manager._hostap_last_error = None
+    return jsonify({'success': True})
 
 
 @app.route('/api/ethernet/status')
