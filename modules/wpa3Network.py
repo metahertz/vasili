@@ -12,6 +12,7 @@ Phases:
 from logging_config import get_logger
 from vasili import PipelineModule, WifiNetwork
 from modules.stages import (
+    KnownCredentialsStage,
     SavedCredentialsStage,
     ConfiguredKeysStage,
     ConnectionGateStage,
@@ -29,8 +30,10 @@ class WPA3NetworkPipeline(PipelineModule):
     priority = 50
     auto_connect = False
 
-    def __init__(self, card_manager, consent_manager=None, module_config=None, **kwargs):
+    def __init__(self, card_manager, consent_manager=None, module_config=None,
+                 known_networks_store=None, **kwargs):
         phases = [
+            KnownCredentialsStage(),
             SavedCredentialsStage(),
             ConfiguredKeysStage(),
             ConnectionGateStage(),   # Stops pipeline if no WiFi association
@@ -43,12 +46,16 @@ class WPA3NetworkPipeline(PipelineModule):
             consent_manager=consent_manager,
             module_config=module_config,
         )
+        self._known_networks_store = known_networks_store
 
     def can_connect(self, network: WifiNetwork) -> bool:
         return network.encryption_type == 'WPA3'
 
     def _get_connect_context(self) -> dict:
-        return {'_passwords': self._get_passwords()}
+        return {
+            '_passwords': self._get_passwords(),
+            '_known_networks_store': self._known_networks_store,
+        }
 
     def _get_passwords(self) -> list[str]:
         cfg = self.get_module_config()

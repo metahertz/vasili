@@ -7,3 +7,4 @@ python-iptables
 pyyaml
 pyarchops-dnsmasq
 requests
+cryptography

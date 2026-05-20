@@ -19,6 +19,7 @@ Pipeline phases:
 from logging_config import get_logger
 from vasili import PipelineModule, WifiNetwork
 from modules.stages import (
+    KnownCredentialsStage,
     SavedCredentialsStage,
     ConfiguredKeysStage,
     ConnectionGateStage,
@@ -47,8 +48,10 @@ class WEPNetworkPipeline(PipelineModule):
     auto_connect = False  # Credential stages handle connection
 
     def __init__(self, card_manager, consent_manager=None,
-                 module_config=None, pipeline_config=None, **kwargs):
+                 module_config=None, pipeline_config=None,
+                 known_networks_store=None, **kwargs):
         phases = [
+            KnownCredentialsStage(),       # 0. Pre-registered per-SSID key
             SavedCredentialsStage(),       # 1. nmcli stored profiles
             ConfiguredKeysStage(),         # 2. User-configured keys
             WepCommonKeysStage(),          # 3. Common factory defaults
@@ -65,6 +68,7 @@ class WEPNetworkPipeline(PipelineModule):
             module_config=module_config,
             pipeline_config=pipeline_config,
         )
+        self._known_networks_store = known_networks_store
 
     def can_connect(self, network: WifiNetwork) -> bool:
         return network.encryption_type == 'WEP'
@@ -80,6 +84,7 @@ class WEPNetworkPipeline(PipelineModule):
         return {
             '_passwords': wep_keys,
             '_wep_keys': wep_keys,
+            '_known_networks_store': self._known_networks_store,
         }
 
     def get_config_schema(self) -> dict:

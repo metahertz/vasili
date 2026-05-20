@@ -34,6 +34,7 @@ from persistence import ConnectionStore
 from notifications import NotificationManager, NotificationEvent
 from bandwidth import BandwidthMonitor
 from module_config import ModuleConfigStore
+from known_networks_store import KnownNetworksStore
 from consent import ConsentManager
 from mac_manager import MacManager
 import network_isolation
@@ -3253,6 +3254,14 @@ class WifiManager:
             db_name=config.database.db_name,
         )
 
+        kn_cfg = getattr(config, 'known_networks', None)
+        key_path = getattr(kn_cfg, 'master_key_path', None) if kn_cfg else None
+        self.known_networks_store = KnownNetworksStore(
+            mongo_uri=config.database.mongodb_uri,
+            db_name=config.database.db_name,
+            key_path=key_path,
+        )
+
         self.modules = self._load_connection_modules()
         self.disabled_modules: set[str] = self._load_disabled_modules()
 
@@ -3412,6 +3421,8 @@ class WifiManager:
                                 kwargs['pipeline_config'] = self.pipeline_config
                             if 'probe_history' in sig.parameters:
                                 kwargs['probe_history'] = self.probe_history
+                            if 'known_networks_store' in sig.parameters:
+                                kwargs['known_networks_store'] = self.known_networks_store
                             modules.append(obj(self.card_manager, **kwargs))
                             logger.info(f'Loaded module: {module_name}')
                 except Exception as e:
@@ -4720,6 +4731,47 @@ def set_module_config(name):
         return jsonify({'error': 'No data provided'}), 400
     success = wifi_manager.module_config.set_config_bulk(name, data)
     return jsonify({'success': success})
+
+
+@app.route('/api/known-networks', methods=['GET'])
+def list_known_networks():
+    """Return all known-network entries (passwords redacted)."""
+    return jsonify(wifi_manager.known_networks_store.list_all())
+
+
+@app.route('/api/known-networks', methods=['POST'])
+def add_known_network():
+    """Add or update a known-network credential. Body: {ssid, password, security?, notes?}."""
+    data = request.get_json() or {}
+    ssid = (data.get('ssid') or '').strip()
+    password = data.get('password') or ''
+    if not ssid or not password:
+        return jsonify({'error': 'ssid and password required'}), 400
+    ok = wifi_manager.known_networks_store.add(
+        ssid=ssid,
+        password=password,
+        security=data.get('security', 'WPA2'),
+        notes=data.get('notes', ''),
+    )
+    if not ok:
+        return jsonify({'error': 'Store unavailable'}), 503
+    return jsonify({'success': True, 'ssid': ssid})
+
+
+@app.route('/api/known-networks/<ssid>', methods=['DELETE'])
+def remove_known_network(ssid):
+    ok = wifi_manager.known_networks_store.remove(ssid)
+    if not ok:
+        return jsonify({'error': 'Not found or store unavailable'}), 404
+    return jsonify({'success': True, 'ssid': ssid})
+
+
+@app.route('/api/known-networks/<ssid>/reveal', methods=['GET'])
+def reveal_known_network(ssid):
+    password = wifi_manager.known_networks_store.reveal(ssid)
+    if password is None:
+        return jsonify({'error': 'Not found'}), 404
+    return jsonify({'ssid': ssid, 'password': password})
 
 
 @app.route('/api/modules/<name>/enabled', methods=['PUT'])

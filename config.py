@@ -101,6 +101,13 @@ class CaptivePortalConfig:
 
 
 @dataclass
+class KnownNetworksConfig:
+    """Encrypted per-SSID credential vault settings."""
+
+    master_key_path: Optional[str] = None
+
+
+@dataclass
 class HostAPConfig:
     """Host Access Point settings."""
 
@@ -127,6 +134,7 @@ class VasiliConfig:
     database: DatabaseConfig = field(default_factory=DatabaseConfig)
     captive_portal: CaptivePortalConfig = field(default_factory=CaptivePortalConfig)
     hostap: HostAPConfig = field(default_factory=HostAPConfig)
+    known_networks: KnownNetworksConfig = field(default_factory=KnownNetworksConfig)
 
     @classmethod
     def from_dict(cls, data: dict) -> 'VasiliConfig':
@@ -204,6 +212,12 @@ class VasiliConfig:
                 security=ha_data.get('security', 'wpa2'),
                 password=ha_data.get('password', 'vasili1234'),
                 channel=ha_data.get('channel', 6),
+            )
+
+        if 'known_networks' in data:
+            kn_data = data['known_networks'] or {}
+            config.known_networks = KnownNetworksConfig(
+                master_key_path=kn_data.get('master_key_path'),
             )
 
         if 'consent' in data:

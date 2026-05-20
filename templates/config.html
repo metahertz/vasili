@@ -244,6 +244,39 @@
         </div>
 
         <div class="section">
+            <h2>Saved Wi-Fi Credentials</h2>
+            <p style="color:#8b949e;font-size:0.9em;margin-bottom:12px">
+                Networks you own or are authorized to use. Vasili tries these credentials first when the matching SSID is in range. Passwords are encrypted on disk with a device-bound key.
+            </p>
+            <div id="known-networks-list" style="margin-bottom:14px">
+                <div style="color:#484f58;text-align:center;padding:12px">Loading...</div>
+            </div>
+            <div style="background:#0d1117;border:1px solid #21262d;border-radius:4px;padding:12px;display:flex;flex-direction:column;gap:10px">
+                <div style="display:flex;gap:8px;flex-wrap:wrap">
+                    <input id="kn-ssid" placeholder="SSID" style="flex:2;min-width:160px;padding:6px;background:#161b22;border:1px solid #30363d;color:#c9d1d9;border-radius:4px;font-family:inherit">
+                    <select id="kn-security" style="flex:1;min-width:100px;padding:6px;background:#161b22;border:1px solid #30363d;color:#c9d1d9;border-radius:4px;font-family:inherit">
+                        <option value="WPA2">WPA2</option>
+                        <option value="WPA3">WPA3</option>
+                        <option value="WPA">WPA</option>
+                        <option value="WEP">WEP</option>
+                    </select>
+                </div>
+                <input id="kn-password" type="password" placeholder="Password" style="padding:6px;background:#161b22;border:1px solid #30363d;color:#c9d1d9;border-radius:4px;font-family:inherit">
+                <input id="kn-notes" placeholder="Notes (optional)" style="padding:6px;background:#161b22;border:1px solid #30363d;color:#c9d1d9;border-radius:4px;font-family:inherit">
+                <div style="display:flex;justify-content:flex-end">
+                    <button class="btn" style="background:#238636;border-color:#238636;color:#fff" onclick="addKnownNetwork()">Save Credential</button>
+                </div>
+                <div style="border-top:1px solid #21262d;padding-top:10px">
+                    <div style="color:#8b949e;font-size:0.85em;margin-bottom:6px">Or paste a Wi-Fi QR string (e.g. <code>WIFI:S:Home;T:WPA;P:secret;;</code>) — fields auto-fill:</div>
+                    <div style="display:flex;gap:8px">
+                        <input id="kn-qr" placeholder="WIFI:S:...;T:WPA;P:...;;" style="flex:1;padding:6px;background:#161b22;border:1px solid #30363d;color:#c9d1d9;border-radius:4px;font-family:inherit">
+                        <button class="btn" onclick="parseWifiQR()">Parse</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="section">
             <h2>Data Management</h2>
             <div style="display:flex;flex-direction:column;gap:12px">
                 <div style="display:flex;justify-content:space-between;align-items:center;padding:10px;background:#0d1117;border:1px solid #21262d;border-radius:4px">
@@ -1036,7 +1069,115 @@
             });
         }
 
-        window.addEventListener('load', () => { loadHostAP(); loadEthernet(); loadModules(); });
+        // ----- Saved Wi-Fi Credentials -----
+
+        function loadKnownNetworks() {
+            fetch('/api/known-networks').then(r => r.json()).then(rows => {
+                const container = el('known-networks-list');
+                if (!Array.isArray(rows) || rows.length === 0) {
+                    container.innerHTML = '<div style="color:#484f58;text-align:center;padding:12px;background:#0d1117;border:1px solid #21262d;border-radius:4px">No saved credentials yet</div>';
+                    return;
+                }
+                container.innerHTML = rows.map(r => {
+                    const ssid = (r.ssid || '').replace(/"/g, '&quot;');
+                    const security = (r.security || 'WPA2').replace(/</g, '&lt;');
+                    const notes = (r.notes || '').replace(/</g, '&lt;');
+                    return `
+                        <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 10px;background:#0d1117;border:1px solid #21262d;border-radius:4px;margin-bottom:6px;gap:10px;flex-wrap:wrap">
+                            <div style="flex:1;min-width:160px">
+                                <div style="color:#c9d1d9;font-weight:bold">${ssid}</div>
+                                <div style="color:#8b949e;font-size:0.8em">${security}${notes ? ' &middot; ' + notes : ''}</div>
+                            </div>
+                            <div style="display:flex;gap:6px;align-items:center">
+                                <code id="kn-pw-${ssid}" style="color:#8b949e;font-size:0.85em;min-width:80px">***</code>
+                                <button class="btn btn-sm" onclick="revealKnownNetwork('${ssid}')">Reveal</button>
+                                <button class="btn btn-sm" style="background:#da3633;border-color:#da3633;color:#fff" onclick="removeKnownNetwork('${ssid}')">Remove</button>
+                            </div>
+                        </div>`;
+                }).join('');
+            });
+        }
+
+        function addKnownNetwork() {
+            const ssid = el('kn-ssid').value.trim();
+            const password = el('kn-password').value;
+            const security = el('kn-security').value;
+            const notes = el('kn-notes').value.trim();
+            if (!ssid || !password) { toast('SSID and password required'); return; }
+            fetch('/api/known-networks', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ssid, password, security, notes}),
+            }).then(r => r.json()).then(d => {
+                if (d.success) {
+                    toast('Saved credential for ' + ssid);
+                    el('kn-ssid').value = '';
+                    el('kn-password').value = '';
+                    el('kn-notes').value = '';
+                    el('kn-qr').value = '';
+                    loadKnownNetworks();
+                } else {
+                    toast(d.error || 'Failed to save');
+                }
+            });
+        }
+
+        function removeKnownNetwork(ssid) {
+            if (!confirm('Remove saved credential for "' + ssid + '"?')) return;
+            fetch('/api/known-networks/' + encodeURIComponent(ssid), {method: 'DELETE'})
+                .then(r => r.json())
+                .then(d => {
+                    if (d.success) { toast('Removed ' + ssid); loadKnownNetworks(); }
+                    else toast(d.error || 'Failed to remove');
+                });
+        }
+
+        function revealKnownNetwork(ssid) {
+            fetch('/api/known-networks/' + encodeURIComponent(ssid) + '/reveal')
+                .then(r => r.json())
+                .then(d => {
+                    if (!d.password) { toast(d.error || 'Not found'); return; }
+                    const cell = el('kn-pw-' + ssid);
+                    if (!cell) return;
+                    cell.textContent = d.password;
+                    cell.style.color = '#f0883e';
+                    setTimeout(() => { cell.textContent = '***'; cell.style.color = '#8b949e'; }, 10000);
+                });
+        }
+
+        function parseWifiQR() {
+            const raw = el('kn-qr').value.trim();
+            if (!raw.startsWith('WIFI:')) { toast('Not a Wi-Fi QR string'); return; }
+            // Format: WIFI:S:<ssid>;T:<WPA|WEP|nopass>;P:<password>;H:<true|false>;;
+            // Values can be escaped with \\ for ; , : " \\ — handle the common ones.
+            const body = raw.slice(5).replace(/;;\s*$/, '');
+            const fields = {};
+            let key = null, buf = '', i = 0;
+            while (i < body.length) {
+                const c = body[i];
+                if (c === '\\' && i + 1 < body.length) { buf += body[i + 1]; i += 2; continue; }
+                if (c === ':' && key === null) { key = buf; buf = ''; i++; continue; }
+                if (c === ';') {
+                    if (key !== null) { fields[key] = buf; }
+                    key = null; buf = ''; i++; continue;
+                }
+                buf += c; i++;
+            }
+            if (key !== null) fields[key] = buf;
+            const ssid = fields['S'] || '';
+            const type = (fields['T'] || '').toUpperCase();
+            const password = fields['P'] || '';
+            if (!ssid) { toast('QR missing SSID'); return; }
+            el('kn-ssid').value = ssid;
+            el('kn-password').value = password;
+            const sec = el('kn-security');
+            if (type === 'WEP') sec.value = 'WEP';
+            else if (type === 'WPA' || type === 'WPA2') sec.value = 'WPA2';
+            else if (type === 'WPA3' || type === 'SAE') sec.value = 'WPA3';
+            toast('Parsed — review and save');
+        }
+
+        window.addEventListener('load', () => { loadHostAP(); loadEthernet(); loadModules(); loadKnownNetworks(); });
     </script>
 </body>
 </html>

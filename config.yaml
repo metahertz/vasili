@@ -107,3 +107,13 @@ hostap:
 
   # WiFi channel (1-14 for 2.4GHz, 36+ for 5GHz)
   channel: 6
+
+# Known Networks — encrypted per-SSID credential vault
+# Users register SSID + password pairs from the dashboard. Vasili then
+# tries these credentials first when the matching SSID is scanned.
+# Passwords are encrypted at rest with a Fernet key stored on disk
+# (mode 0600). If the key file doesn't exist it is generated on first run.
+known_networks:
+  # Path to the master encryption key file. If omitted, the store tries
+  # `/home/ubuntu/vasili/.vasili-master.key` then `~/.vasili/master.key`.
+  # master_key_path: /home/ubuntu/vasili/.vasili-master.key

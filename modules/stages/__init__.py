@@ -20,6 +20,7 @@ from modules.stages.connectivity import ConnectivityCheckStage
 from modules.stages.dns_probe import DnsProbeStage
 from modules.stages.captive_portal import CaptivePortalStage
 from modules.stages.credentials import SavedCredentialsStage, ConfiguredKeysStage
+from modules.stages.known_networks import KnownCredentialsStage
 from modules.stages.pmkid import PmkidCaptureStage
 from modules.stages.connection_gate import ConnectionGateStage
 from modules.stages.wep_crack import WepCrackStage, WepCommonKeysStage
@@ -33,6 +34,7 @@ __all__ = [
     'CaptivePortalStage',
     'SavedCredentialsStage',
     'ConfiguredKeysStage',
+    'KnownCredentialsStage',
     'PmkidCaptureStage',
     'ConnectionGateStage',
     'WepCrackStage',
@@ -54,6 +56,7 @@ STAGE_REGISTRY: dict = {
     ConnectionGateStage.name: ConnectionGateStage,
     SavedCredentialsStage.name: SavedCredentialsStage,
     ConfiguredKeysStage.name: ConfiguredKeysStage,
+    KnownCredentialsStage.name: KnownCredentialsStage,
     DnsProbeStage.name: DnsProbeStage,
     CaptivePortalStage.name: CaptivePortalStage,
     DnsTunnelStage.name: DnsTunnelStage,
