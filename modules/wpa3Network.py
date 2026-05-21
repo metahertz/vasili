@@ -31,7 +31,7 @@ class WPA3NetworkPipeline(PipelineModule):
     auto_connect = False
 
     def __init__(self, card_manager, consent_manager=None, module_config=None,
-                 known_networks_store=None, **kwargs):
+                 pipeline_config=None, known_networks_store=None, **kwargs):
         phases = [
             KnownCredentialsStage(),
             SavedCredentialsStage(),
@@ -45,6 +45,7 @@ class WPA3NetworkPipeline(PipelineModule):
             card_manager, phases=phases,
             consent_manager=consent_manager,
             module_config=module_config,
+            pipeline_config=pipeline_config,
         )
         self._known_networks_store = known_networks_store
 

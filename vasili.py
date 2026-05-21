@@ -685,252 +685,116 @@ class DnsmasqDHCP:
             time.sleep(0.1)
 
 
-class NetworkBridge:
-    def __init__(self, wifi_interface: str, ethernet_interface: str):
+class ConnectionShare:
+    """Share an upstream WiFi connection with already-configured local surfaces.
+
+    Each downstream surface (eth0 in management mode, usb0, future HostAP)
+    is expected to have its own addressing already — this class only installs
+    forwarding + MASQUERADE rules so traffic from those surfaces is NAT'd
+    out through the active upstream.
+
+    Reuses the VASILI-FWD / VASILI-NAT chains so coexists with HostAP's
+    own VASILI-HOSTAP-* chains.
+    """
+
+    def __init__(self, wifi_interface: str, downstream_interfaces: list[str]):
         self.wifi_interface = wifi_interface
-        self.ethernet_interface = ethernet_interface
-        self.dhcp_server = None
+        self.downstream_interfaces = list(downstream_interfaces)
         self.is_active = False
-        self._nat_configured = False
-        self._ip_configured = False
+        # Kept for callers that expect a single ``ethernet_interface``
+        # attribute (e.g. status payload, HostAP fallback upstream).
+        self.ethernet_interface = (
+            self.downstream_interfaces[0] if self.downstream_interfaces else ''
+        )
         self._original_ip_forward: Optional[str] = None
 
-    def setup_nat(self) -> bool:
-        """Set up NAT for traffic forwarding."""
+    def start(self) -> bool:
         try:
-            # Save original IP forwarding state
             try:
                 with open('/proc/sys/net/ipv4/ip_forward', 'r') as f:
                     self._original_ip_forward = f.read().strip()
-            except Exception as e:
-                logger.warning(f'Could not read original IP forward state: {e}')
+            except Exception:
                 self._original_ip_forward = '0'
-
-            # Enable IP forwarding
             try:
                 with open('/proc/sys/net/ipv4/ip_forward', 'w') as f:
                     f.write('1')
             except PermissionError:
-                logger.error('Permission denied: cannot enable IP forwarding. Run as root.')
-                return False
-            except Exception as e:
-                logger.error(f'Failed to enable IP forwarding: {e}')
+                logger.error('ConnectionShare: cannot enable ip_forward (need root)')
                 return False
 
-            # Set up vasili-specific iptables chains (avoid flushing all rules)
             for cmd in [
                 ['iptables', '-N', 'VASILI-FWD'],
                 ['iptables', '-t', 'nat', '-N', 'VASILI-NAT'],
             ]:
-                result = subprocess.run(cmd, capture_output=True, text=True)
-                # Chain may already exist from a previous run — that's fine
-                if result.returncode != 0 and 'already exists' not in result.stderr.lower():
-                    logger.debug(f'Chain creation note: {result.stderr.strip()}')
+                r = subprocess.run(cmd, capture_output=True, text=True)
+                if r.returncode != 0 and 'already exists' not in r.stderr.lower():
+                    logger.debug(f'Chain creation: {r.stderr.strip()}')
 
-            # Flush only vasili chains
-            subprocess.run(['iptables', '-F', 'VASILI-FWD'], capture_output=True, text=True)
-            subprocess.run(
-                ['iptables', '-t', 'nat', '-F', 'VASILI-NAT'], capture_output=True, text=True
-            )
+            subprocess.run(['iptables', '-F', 'VASILI-FWD'], capture_output=True)
+            subprocess.run(['iptables', '-t', 'nat', '-F', 'VASILI-NAT'],
+                           capture_output=True)
 
-            # Jump into vasili chains from main chains (idempotent)
             for jump_cmd in [
                 ['iptables', '-C', 'FORWARD', '-j', 'VASILI-FWD'],
                 ['iptables', '-t', 'nat', '-C', 'POSTROUTING', '-j', 'VASILI-NAT'],
             ]:
-                result = subprocess.run(jump_cmd, capture_output=True, text=True)
-                if result.returncode != 0:
-                    # Rule doesn't exist yet — add it
-                    add_cmd = [jump_cmd[0]] + ['-A' if c == '-C' else c for c in jump_cmd[1:]]
-                    subprocess.run(add_cmd, capture_output=True, text=True)
+                r = subprocess.run(jump_cmd, capture_output=True, text=True)
+                if r.returncode != 0:
+                    add = [jump_cmd[0]] + ['-A' if c == '-C' else c for c in jump_cmd[1:]]
+                    subprocess.run(add, capture_output=True)
 
-            # Set up NAT masquerade in vasili chain
-            result = subprocess.run(
-                [
-                    'iptables',
-                    '-t',
-                    'nat',
-                    '-A',
-                    'VASILI-NAT',
-                    '-o',
-                    self.wifi_interface,
-                    '-j',
-                    'MASQUERADE',
-                ],
-                capture_output=True,
-                text=True,
-            )
-            if result.returncode != 0:
-                logger.error(f'Failed to set up NAT masquerade: {result.stderr}')
-                self._cleanup_nat()
+            r = subprocess.run([
+                'iptables', '-t', 'nat', '-A', 'VASILI-NAT',
+                '-o', self.wifi_interface, '-j', 'MASQUERADE',
+            ], capture_output=True, text=True)
+            if r.returncode != 0:
+                logger.error(f'MASQUERADE on {self.wifi_interface} failed: {r.stderr}')
+                self._teardown()
                 return False
 
-            # Allow forwarding in vasili chain
-            result = subprocess.run(
-                [
-                    'iptables',
-                    '-A',
-                    'VASILI-FWD',
-                    '-i',
-                    self.ethernet_interface,
-                    '-o',
-                    self.wifi_interface,
-                    '-j',
-                    'ACCEPT',
-                ],
-                capture_output=True,
-                text=True,
-            )
-            if result.returncode != 0:
-                logger.error(f'Failed to set up forward rule: {result.stderr}')
-                self._cleanup_nat()
-                return False
+            for ds in self.downstream_interfaces:
+                r1 = subprocess.run([
+                    'iptables', '-A', 'VASILI-FWD',
+                    '-i', ds, '-o', self.wifi_interface, '-j', 'ACCEPT',
+                ], capture_output=True, text=True)
+                r2 = subprocess.run([
+                    'iptables', '-A', 'VASILI-FWD',
+                    '-i', self.wifi_interface, '-o', ds,
+                    '-m', 'state', '--state', 'RELATED,ESTABLISHED',
+                    '-j', 'ACCEPT',
+                ], capture_output=True, text=True)
+                if r1.returncode != 0 or r2.returncode != 0:
+                    logger.error(f'FORWARD rules for {ds} failed: '
+                                 f'{r1.stderr.strip() or r2.stderr.strip()}')
+                    self._teardown()
+                    return False
 
-            result = subprocess.run(
-                [
-                    'iptables',
-                    '-A',
-                    'VASILI-FWD',
-                    '-i',
-                    self.wifi_interface,
-                    '-o',
-                    self.ethernet_interface,
-                    '-m',
-                    'state',
-                    '--state',
-                    'RELATED,ESTABLISHED',
-                    '-j',
-                    'ACCEPT',
-                ],
-                capture_output=True,
-                text=True,
+            self.is_active = True
+            logger.info(
+                f'ConnectionShare active: {self.wifi_interface} -> '
+                f'[{", ".join(self.downstream_interfaces) or "(no downstreams)"}]'
             )
-            if result.returncode != 0:
-                logger.error(f'Failed to set up reverse forward rule: {result.stderr}')
-                self._cleanup_nat()
-                return False
-
-            self._nat_configured = True
-            logger.info('NAT setup completed successfully')
             return True
-
         except Exception as e:
-            logger.error(f'Failed to set up NAT: {e}')
-            self._cleanup_nat()
+            logger.error(f'ConnectionShare start failed: {e}')
+            self._teardown()
             return False
 
-    def _cleanup_nat(self):
-        """Clean up NAT configuration on failure."""
-        try:
-            subprocess.run(['iptables', '-F', 'VASILI-FWD'], capture_output=True)
-            subprocess.run(['iptables', '-t', 'nat', '-F', 'VASILI-NAT'], capture_output=True)
-            if self._original_ip_forward is not None:
-                try:
-                    with open('/proc/sys/net/ipv4/ip_forward', 'w') as f:
-                        f.write(self._original_ip_forward)
-                except Exception:
-                    pass
-        except Exception as e:
-            logger.warning(f'Error during NAT cleanup: {e}')
-        self._nat_configured = False
-
-    def setup_dhcp(self) -> bool:
-        """Set up DHCP server on ethernet interface."""
-        try:
-            # Configure ethernet interface with static IP
-            result = subprocess.run(
-                ['ip', 'addr', 'add', '192.168.10.1/24', 'dev', self.ethernet_interface],
-                capture_output=True,
-                text=True,
-            )
-            # Ignore "already exists" errors
-            if result.returncode != 0 and 'RTNETLINK answers: File exists' not in result.stderr:
-                logger.error(f'Failed to configure IP: {result.stderr}')
-                return False
-
-            self._ip_configured = True
-
-            result = subprocess.run(
-                ['ip', 'link', 'set', self.ethernet_interface, 'up'], capture_output=True, text=True
-            )
-            if result.returncode != 0:
-                logger.error(f'Failed to bring up interface: {result.stderr}')
-                self._cleanup_dhcp()
-                return False
-
-            # Start DHCP server
-            self.dhcp_server = DnsmasqDHCP(
-                interface=self.ethernet_interface,
-                dhcp_range=('192.168.10.50', '192.168.10.150'),
-                subnet_mask='255.255.255.0',
-            )
-            self.dhcp_server.start()
-            logger.info('DHCP server started successfully')
-            return True
-
-        except Exception as e:
-            logger.error(f'Failed to set up DHCP: {e}')
-            self._cleanup_dhcp()
-            return False
-
-    def _cleanup_dhcp(self):
-        """Clean up DHCP configuration on failure."""
-        try:
-            if self.dhcp_server:
-                try:
-                    self.dhcp_server.stop()
-                except Exception as e:
-                    logger.warning(f'Error stopping DHCP server: {e}')
-                self.dhcp_server = None
-
-            if self._ip_configured:
-                subprocess.run(
-                    ['ip', 'addr', 'del', '192.168.10.1/24', 'dev', self.ethernet_interface],
-                    capture_output=True,
-                )
-                self._ip_configured = False
-        except Exception as e:
-            logger.warning(f'Error during DHCP cleanup: {e}')
-
-    def start(self) -> bool:
-        """Start the network bridge. Cleans up on partial failure."""
-        nat_ok = self.setup_nat()
-        if not nat_ok:
-            logger.error('Bridge start failed: NAT setup failed')
-            return False
-
-        dhcp_ok = self.setup_dhcp()
-        if not dhcp_ok:
-            logger.error('Bridge start failed: DHCP setup failed, cleaning up NAT')
-            self._cleanup_nat()
-            return False
-
-        self.is_active = True
-        logger.info(f'Network bridge active: {self.wifi_interface} -> {self.ethernet_interface}')
-        return True
+    def _teardown(self):
+        subprocess.run(['iptables', '-F', 'VASILI-FWD'], capture_output=True)
+        subprocess.run(['iptables', '-t', 'nat', '-F', 'VASILI-NAT'],
+                       capture_output=True)
+        if self._original_ip_forward is not None:
+            try:
+                with open('/proc/sys/net/ipv4/ip_forward', 'w') as f:
+                    f.write(self._original_ip_forward)
+            except Exception:
+                pass
 
     def stop(self):
-        """Stop the network bridge and clean up all resources."""
-        logger.info('Stopping network bridge...')
-
-        # Stop DHCP server
-        self._cleanup_dhcp()
-
-        # Clean up NAT
-        self._cleanup_nat()
-
+        logger.info('Stopping ConnectionShare')
+        self._teardown()
         self.is_active = False
-        logger.info('Network bridge stopped')
-
-    def get_status(self) -> dict:
-        """Get bridge status information."""
-        return {
-            'is_active': self.is_active,
-            'wifi_interface': self.wifi_interface,
-            'ethernet_interface': self.ethernet_interface,
-            'nat_configured': self._nat_configured,
-            'dhcp_running': self.dhcp_server is not None,
-        }
 
 
 class HostAP:
@@ -1389,6 +1253,115 @@ class HostAP:
         }
 
 
+def _get_device_ssid_map() -> dict[str, str]:
+    """Return {interface: on-the-air SSID} from one `iw dev` call.
+
+    Uses iw rather than nmcli because nmcli's CONNECTION field reports
+    the *profile name* (e.g. "Will there be a piano? 1"), which diverges
+    from the actual SSID once duplicate profiles exist. iw reports the
+    SSID the radio is currently associated to, which is what vasili's
+    in-memory ConnectionResult.network.ssid is compared against.
+    """
+    out: dict[str, str] = {}
+    try:
+        r = subprocess.run(
+            ['iw', 'dev'], capture_output=True, text=True, timeout=5,
+        )
+        current_iface: Optional[str] = None
+        for raw in r.stdout.splitlines():
+            line = raw.strip()
+            if line.startswith('Interface '):
+                current_iface = line.split(None, 1)[1]
+            elif line.startswith('ssid ') and current_iface:
+                out[current_iface] = line[len('ssid '):]
+    except Exception as e:
+        logger.debug(f'_get_device_ssid_map failed: {e}')
+    return out
+
+
+def _nm_disable_autoconnect_for_interface(iface: str) -> int:
+    """Disable autoconnect on every NM profile bound to this iface.
+
+    Used post-connect to disable the profile NM just created so the
+    interface won't be auto-re-associated after vasili repurposes the
+    card. Returns the number of profiles modified.
+    """
+    if not iface:
+        return 0
+    modified = 0
+    try:
+        r = subprocess.run(
+            ['nmcli', '-t', '-f', 'NAME,DEVICE', 'connection', 'show'],
+            capture_output=True, text=True, timeout=5,
+        )
+        targets: list[str] = []
+        for line in r.stdout.splitlines():
+            if not line:
+                continue
+            parts = line.rsplit(':', 1)
+            if len(parts) != 2:
+                continue
+            name, device = parts
+            if device == iface:
+                targets.append(name)
+        for name in targets:
+            mr = subprocess.run(
+                ['nmcli', 'connection', 'modify', name,
+                 'connection.autoconnect', 'no'],
+                capture_output=True, text=True, timeout=5,
+            )
+            if mr.returncode == 0:
+                modified += 1
+    except Exception as e:
+        logger.debug(f'_nm_disable_autoconnect_for_interface({iface}): {e}')
+    if modified:
+        logger.info(
+            f'Disabled NM autoconnect on {modified} profile(s) bound to {iface}'
+        )
+    return modified
+
+
+def _nm_disable_autoconnect_all_wifi() -> int:
+    """Disable autoconnect on every NM wifi profile.
+
+    Per-interface cleanup only catches profiles currently bound to a
+    device. Inactive sandbag profiles (from previous sessions, no
+    current DEVICE column) still have autoconnect=yes and will hijack
+    cards as soon as vasili releases them. Vasili owns wifi orchestration
+    on this host, so we disable autoconnect on every wifi profile at
+    startup. Idempotent.
+    """
+    modified = 0
+    try:
+        r = subprocess.run(
+            ['nmcli', '-t', '-f', 'NAME,TYPE', 'connection', 'show'],
+            capture_output=True, text=True, timeout=5,
+        )
+        targets: list[str] = []
+        for line in r.stdout.splitlines():
+            if not line:
+                continue
+            parts = line.rsplit(':', 1)
+            if len(parts) != 2:
+                continue
+            name, ctype = parts
+            if ctype == '802-11-wireless':
+                targets.append(name)
+        for name in targets:
+            mr = subprocess.run(
+                ['nmcli', 'connection', 'modify', name,
+                 'connection.autoconnect', 'no'],
+                capture_output=True, text=True, timeout=5,
+            )
+            if mr.returncode == 0:
+                modified += 1
+    except Exception as e:
+        logger.debug(f'_nm_disable_autoconnect_all_wifi: {e}')
+    if modified:
+        logger.info(f'Disabled NM autoconnect on {modified} wifi profile(s)')
+    return modified
+
+
 class WifiCard:
     def __init__(self, interface_name: str, mac_manager: MacManager = None):
         """Initialize a wifi card with the given interface name"""
@@ -1554,7 +1527,6 @@ class WifiCard:
 
                 if result.returncode == 0:
                     logger.info(f'Successfully connected to {network.ssid} on {self.interface}')
-                    self.in_use = True
                     self._connected_network = network
                     self._connection_password = password
 
@@ -1562,6 +1534,11 @@ class WifiCard:
                     # checks use this interface, not eth0
                     self._routing_info = self._setup_isolation()
 
+                    # NM creates per-interface profiles with autoconnect=yes
+                    # by default. Without this call, NM will keep re-binding
+                    # the interface to this SSID even after vasili releases
+                    # it for scanning/other modules.
+                    _nm_disable_autoconnect_for_interface(self.interface)
                     return True
                 else:
                     last_error = f'nmcli error: {result.stderr}'
@@ -1588,7 +1565,10 @@ class WifiCard:
         logger.error(
             f'Failed to connect to {network.ssid} after {max_retries} attempts. Last error: {last_error}'
         )
-        self.in_use = False
+        # NB: do NOT clear self.in_use here. Lease ownership belongs to
+        # WifiCardManager.lease_card / return_card; a failed connect attempt
+        # within an already-leased pipeline must not surrender the lease,
+        # or the card races into another worker mid-pipeline.
         return False
 
     def disconnect(self) -> bool:
@@ -1606,7 +1586,8 @@ class WifiCard:
             )
             if result.returncode == 0:
                 logger.info(f'Disconnected {self.interface}')
-                self.in_use = False
+                # Lease ownership stays with WifiCardManager; disconnecting
+                # only clears the network state, not the lease.
                 self._connected_network = None
                 self._connection_password = None
                 return True
@@ -3335,6 +3316,12 @@ class WifiManager:
         #                 'pool' (available for future ethernet-based modules)
         self._ethernet_mode = self._load_ethernet_mode()
 
+        # Auto-bridge: when true, the first successful connection (and any
+        # subsequent success while no bridge is active) is immediately bridged
+        # without waiting for the auto-selector's evaluation interval. Picks
+        # the highest-scored entry in suitable_connections each time.
+        self._auto_bridge_enabled = self._load_auto_bridge_enabled()
+
         # Register callback to track reconnection events
         self.connection_monitor.on_reconnect(self._on_reconnect)
 
@@ -3346,6 +3333,79 @@ class WifiManager:
         # upfront makes "why can't I start HostAP?" answerable from the
         # journal without opening the UI.
         self._log_hostap_capabilities()
+
+        # Neutralise pre-existing NM profiles bound to vasili interfaces.
+        # NM defaults to autoconnect=yes for every per-device profile, so
+        # without this an interface vasili repurposes (e.g. as the scan
+        # card) gets re-associated to its old SSID behind our back.
+        self._neutralize_nm_autoconnect()
+
+    def _neutralize_nm_autoconnect(self):
+        """Disable autoconnect on every NM wifi profile at startup.
+
+        Catches both active (device-bound) and dormant (no DEVICE column)
+        wifi profiles — the latter are sandbags from previous sessions
+        that would hijack a card as soon as vasili releases it.
+        """
+        _nm_disable_autoconnect_all_wifi()
+
+    def _reconcile_suitable_connections(self):
+        """Drop / repoint suitable_connections entries to match OS reality.
+
+        The ConnectionResult.interface field is a snapshot taken at the
+        moment of success. If NM later moves the SSID to a different card
+        (e.g. via autoconnect) or the card drops the connection, the
+        entry is stale. One nmcli call per scan cycle keeps the in-memory
+        view aligned with the OS without per-card polling.
+        """
+        if not self.suitable_connections:
+            return
+        ssid_by_iface = _get_device_ssid_map()
+        iface_by_ssid: dict[str, str] = {}
+        for iface, ssid in ssid_by_iface.items():
+            iface_by_ssid.setdefault(ssid, iface)
+
+        managed_ifaces = {c.interface for c in self.card_manager.get_all_cards()}
+        changes_made = False
+        to_remove: list[ConnectionResult] = []
+
+        with self._connections_lock:
+            for conn in self.suitable_connections:
+                ssid = conn.network.ssid
+                if ssid_by_iface.get(conn.interface) == ssid:
+                    continue
+                replacement = iface_by_ssid.get(ssid)
+                if replacement and replacement in managed_ifaces:
+                    logger.info(
+                        f'Reconcile: {ssid} moved {conn.interface} -> {replacement}'
+                    )
+                    conn.interface = replacement
+                    changes_made = True
+                    continue
+                logger.info(
+                    f'Reconcile: dropping {ssid} '
+                    f'(was on {conn.interface}, no card holds it now)'
+                )
+                to_remove.append(conn)
+            for c in to_remove:
+                self.suitable_connections.remove(c)
+
+        if to_remove or changes_made:
+            # If the active bridge points at a now-missing upstream, tear it
+            # down so the next auto-bridge tick can pick a fresh one.
+            if (self.active_bridge and self.active_bridge.is_active
+                    and self.active_bridge.wifi_interface not in ssid_by_iface):
+                logger.info(
+                    'Reconcile: tearing down bridge — upstream '
+                    f'{self.active_bridge.wifi_interface} no longer connected'
+                )
+                self.active_bridge.stop()
+                self.status['current_bridge'] = None
+            try:
+                emit_connections_update()
+                emit_status_update()
+            except Exception:
+                pass
 
     def _log_hostap_capabilities(self):
         """Log per-card AP-mode support so missing capability is obvious."""
@@ -3485,40 +3545,79 @@ class WifiManager:
         if connection_index >= len(self.suitable_connections):
             return False
 
-        # Stop any existing bridge
+        # Stop any existing share
         if self.active_bridge:
             self.active_bridge.stop()
 
         connection = self.suitable_connections[connection_index]
+        upstream = connection.interface
 
-        # Find an available ethernet interface
-        ethernet_interfaces = [
-            iface
-            for iface in netifaces.interfaces()
-            if iface.startswith('eth') or iface.startswith('enp')
-        ]
+        downstreams = self._discover_downstream_surfaces(exclude=upstream)
+        if not downstreams:
+            logger.warning(
+                'No downstream surfaces available for connection share '
+                '(ethernet not in management mode, no usb0, HostAP off). '
+                'NAT will be set up so HostAP can still attach later.'
+            )
 
-        if not ethernet_interfaces:
-            logger.error('No ethernet interfaces available')
-            return False
-
-        # Create and start new bridge
-        self.active_bridge = NetworkBridge(
-            wifi_interface=connection.interface, ethernet_interface=ethernet_interfaces[0]
+        self.active_bridge = ConnectionShare(
+            wifi_interface=upstream,
+            downstream_interfaces=downstreams,
         )
 
         if self.active_bridge.start():
             self.status['current_bridge'] = {
-                'wifi_interface': connection.interface,
-                'ethernet_interface': ethernet_interfaces[0],
+                'wifi_interface': upstream,
+                'ethernet_interface': downstreams[0] if downstreams else '',
+                'downstream_interfaces': downstreams,
                 'ssid': connection.network.ssid,
             }
-            # Update HostAP NAT upstream if running
+            # HostAP runs its own NAT chain; point it at the new upstream.
             if self.hostap and self.hostap.is_active:
-                self.hostap.update_upstream(connection.interface)
+                self.hostap.update_upstream(upstream)
             return True
 
         return False
+
+    def _discover_downstream_surfaces(self, exclude: str = '') -> list[str]:
+        """Local interfaces that should receive NAT'd internet from the
+        active upstream. Includes eth0 only when in management mode, any
+        usb0 with an IPv4 address, and skips ``exclude`` (the upstream).
+        Does NOT include the HostAP interface — HostAP installs its own
+        NAT chain via ``HostAP._setup_nat``.
+        """
+        downstreams: list[str] = []
+        try:
+            all_ifaces = netifaces.interfaces()
+        except Exception:
+            return downstreams
+
+        if (
+            self._ethernet_mode == 'management'
+            and 'eth0' in all_ifaces
+            and 'eth0' != exclude
+        ):
+            downstreams.append('eth0')
+
+        for iface in all_ifaces:
+            if iface == exclude:
+                continue
+            if iface.startswith('usb'):
+                try:
+                    addrs = netifaces.ifaddresses(iface).get(netifaces.AF_INET, [])
+                    if addrs:
+                        downstreams.append(iface)
+                except Exception:
+                    pass
+
+        # De-dupe while preserving order
+        seen = set()
+        ordered = []
+        for d in downstreams:
+            if d not in seen:
+                seen.add(d)
+                ordered.append(d)
+        return ordered
 
     def stop_current_connection(self):
         if self.active_bridge:
@@ -3913,6 +4012,41 @@ class WifiManager:
         except Exception as e:
             logger.error(f'Failed to save ethernet mode: {e}')
 
+    def _load_auto_bridge_enabled(self) -> bool:
+        try:
+            config = get_config()
+            client = MongoClient(
+                config.database.mongodb_uri, serverSelectionTimeoutMS=2000
+            )
+            mdb = client[config.database.db_name]
+            doc = mdb['runtime_settings'].find_one({'_id': 'auto_bridge'})
+            return bool(doc.get('enabled', False)) if doc else False
+        except Exception:
+            return False
+
+    def _save_auto_bridge_enabled(self, enabled: bool):
+        try:
+            config = get_config()
+            client = MongoClient(
+                config.database.mongodb_uri, serverSelectionTimeoutMS=2000
+            )
+            mdb = client[config.database.db_name]
+            mdb['runtime_settings'].update_one(
+                {'_id': 'auto_bridge'},
+                {'$set': {'enabled': bool(enabled)}},
+                upsert=True,
+            )
+        except Exception as e:
+            logger.error(f'Failed to save auto-bridge setting: {e}')
+
+    def set_auto_bridge_enabled(self, enabled: bool) -> bool:
+        self._auto_bridge_enabled = bool(enabled)
+        self._save_auto_bridge_enabled(self._auto_bridge_enabled)
+        return True
+
+    def get_auto_bridge_enabled(self) -> bool:
+        return self._auto_bridge_enabled
+
     def get_ethernet_status(self) -> dict:
         """Return current ethernet port status and mode."""
         iface = 'eth0'
@@ -4208,6 +4342,34 @@ class WifiManager:
 
         emit_connections_update()
 
+        # Auto-bridge: if enabled and no bridge is currently active, pick the
+        # best entry from suitable_connections (by score) and bridge it now
+        # instead of waiting for the auto-selector's evaluation tick.
+        if self._auto_bridge_enabled and not (
+            self.active_bridge and self.active_bridge.is_active
+        ):
+            try:
+                with self._connections_lock:
+                    sorted_conns = sorted(
+                        self.suitable_connections,
+                        key=lambda c: c.calculate_score(),
+                        reverse=True,
+                    )
+                    best = sorted_conns[0] if sorted_conns else None
+                    best_index = (
+                        self.suitable_connections.index(best) if best else -1
+                    )
+                if best is not None:
+                    logger.info(
+                        f'Auto-bridge: bridging best connection '
+                        f'{best.network.ssid} (score={best.calculate_score():.1f})'
+                    )
+                    if self.use_connection(best_index):
+                        emit_status_update()
+                        emit_connections_update()
+            except Exception as e:
+                logger.error(f'Auto-bridge failed: {e}')
+
     def scan_and_connect(self):
         """
         Main loop that scans for networks and tests connections in parallel.
@@ -4235,6 +4397,10 @@ class WifiManager:
                     logger.error(f'Error getting scan results: {e}')
                     time.sleep(5)
                     continue
+
+                # Re-poll OS to stay aligned with NM before making decisions
+                # about which networks to attempt.
+                self._reconcile_suitable_connections()
 
                 self.nearby_networks = sorted(
                     networks, key=lambda n: n.signal_strength, reverse=True
@@ -5022,6 +5188,23 @@ def get_auto_selection_status():
     """Get auto-selection status and statistics."""
     status = wifi_manager.get_auto_selection_status()
     return jsonify(status)
+
+
+@app.route('/api/auto-bridge', methods=['GET'])
+def get_auto_bridge():
+    """Return whether auto-bridge of the best successful connection is on."""
+    return jsonify({'enabled': wifi_manager.get_auto_bridge_enabled()})
+
+
+@app.route('/api/auto-bridge', methods=['PUT'])
+def set_auto_bridge():
+    """Enable or disable auto-bridge. Body: {enabled: bool}."""
+    data = request.get_json(silent=True) or {}
+    if 'enabled' not in data:
+        return jsonify({'error': 'enabled field required'}), 400
+    wifi_manager.set_auto_bridge_enabled(bool(data['enabled']))
+    return jsonify({'success': True,
+                    'enabled': wifi_manager.get_auto_bridge_enabled()})
 
 
 @socketio.on('connect')

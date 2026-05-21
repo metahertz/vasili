@@ -112,7 +112,8 @@ class TestWifiCardConnect:
             result = card.connect(network)
 
         assert result is True
-        assert card.in_use is True
+        # Lease ownership belongs to WifiCardManager — connect must not touch in_use.
+        assert card.in_use is False
 
     def test_connect_encrypted_network_with_password(self):
         """Test connection to encrypted network with password"""
@@ -132,13 +133,14 @@ class TestWifiCardConnect:
             result = card.connect(network, password='secret123')
 
         assert result is True
-        assert card.in_use is True
+        assert card.in_use is False
 
     def test_connect_failure(self):
         """Test connection failure"""
         with _patch_wireless_isdir(), patch('subprocess.run') as mock_run, patch('time.sleep'):
             mock_run.return_value = Mock(returncode=0, stdout='', stderr='')
             card = WifiCard('wlan0')
+            card.in_use = True  # pre-leased
 
             network = WifiNetwork(
                 ssid='TestNetwork',
@@ -155,7 +157,8 @@ class TestWifiCardConnect:
             result = card.connect(network)
 
         assert result is False
-        assert card.in_use is False
+        # Failed connect must not surrender the caller's lease.
+        assert card.in_use is True
 
     def test_connect_timeout(self):
         """Test connection timeout"""
@@ -193,7 +196,10 @@ class TestWifiCardDisconnect:
             result = card.disconnect()
 
         assert result is True
-        assert card.in_use is False
+        # disconnect() tears down the network state but does not release
+        # the lease — that's WifiCardManager.return_card's job.
+        assert card.in_use is True
+        assert card._connected_network is None
 
     def test_disconnect_failure(self):
         """Test disconnect failure"""

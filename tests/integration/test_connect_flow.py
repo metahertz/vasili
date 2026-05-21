@@ -26,17 +26,18 @@ class TestConnectFlow:
             is_open=True,
         )
 
-        # Connect
+        # Connect — leased card stays leased
         result = card.connect(network)
         assert result is True
         assert card.in_use is True
 
-        # Disconnect
+        # Disconnect — releases network state but NOT the lease
         card.disconnect()
-        assert card.in_use is False
+        assert card.in_use is True
 
-        # Return card
+        # Return card releases the lease
         manager.return_card(card)
+        assert card.in_use is False
 
     def test_complete_connect_flow_wpa2_network(self, all_mocks):
         """Test connection to WPA2 network with password."""
@@ -79,12 +80,13 @@ class TestConnectFlow:
             is_open=False,
         )
 
-        # Connection should fail
+        # Connection should fail, but the lease stays with the caller
         result = card.connect(network, password='wrongpassword')
         assert result is False
-        assert card.in_use is False
+        assert card.in_use is True
 
         manager.return_card(card)
+        assert card.in_use is False
 
     def test_scan_then_connect_workflow(self, all_mocks):
         """Test complete workflow: scan → select network → connect."""

@@ -115,23 +115,6 @@ def all_mocks(mock_subprocess, mock_netifaces, mock_speedtest, mock_file_io):
 
 
 @pytest.fixture
-def mock_iptc():
-    """Mock iptc library used by NetworkBridge."""
-    with (
-        patch('iptc.Chain') as mock_chain,
-        patch('iptc.Rule') as mock_rule,
-        patch('iptc.Target') as mock_target,
-        patch('iptc.Table') as mock_table,
-    ):
-        yield {
-            'chain': mock_chain,
-            'rule': mock_rule,
-            'target': mock_target,
-            'table': mock_table,
-        }
-
-
-@pytest.fixture
 def mock_time_sleep():
     """Mock time.sleep to speed up tests."""
     with patch('time.sleep') as mock:

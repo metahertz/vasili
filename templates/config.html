@@ -81,37 +81,6 @@
         .switch input:checked + .slider { background: #238636; }
         .switch input:checked + .slider:before { transform: translateX(18px); background: #fff; }
 
-        /* Stages */
-        .stages-list { margin: 10px 0; }
-        .stage-row {
-            display: flex; align-items: center; gap: 8px;
-            padding: 6px 10px; background: #161b22; border: 1px solid #21262d;
-            border-radius: 4px; margin-bottom: 4px; font-size: 0.9em;
-        }
-        .stage-row:last-child { margin-bottom: 0; }
-        .stage-num { color: #484f58; width: 20px; text-align: center; }
-        .stage-name { font-weight: bold; flex: 1; }
-        .stage-consent { color: #d29922; font-size: 0.85em; }
-        .stage-mode { font-size: 0.75em; padding: 1px 5px; border-radius: 3px; }
-        .stage-mode-seq { background: #21262d; color: #8b949e; }
-        .stage-mode-par { background: #1f6feb22; color: #58a6ff; }
-        .parallel-group {
-            border: 1px solid #1f6feb44; border-radius: 6px;
-            padding: 4px; margin-bottom: 4px; background: #0d1117;
-        }
-        .parallel-group:last-child { margin-bottom: 0; }
-        .parallel-label {
-            font-size: 0.75em; color: #58a6ff; text-transform: uppercase;
-            letter-spacing: 0.05em; padding: 2px 8px 4px; display: flex;
-            align-items: center; gap: 6px;
-        }
-        .parallel-label::before {
-            content: ''; display: inline-block; width: 6px; height: 6px;
-            background: #1f6feb; border-radius: 50%;
-        }
-        .parallel-group .stage-row { margin-bottom: 2px; }
-        .parallel-group .stage-row:last-child { margin-bottom: 0; }
-
         /* Config fields */
         .config-section {
             margin-top: 12px; padding-top: 10px;
@@ -214,6 +183,11 @@
         <div class="section">
             <h2>Host Access Point</h2>
             <div id="hostap-section"><div style="color:#484f58;text-align:center;padding:20px">Loading...</div></div>
+        </div>
+
+        <div class="section">
+            <h2>Quick Connect</h2>
+            <div id="auto-bridge-section"><div style="color:#484f58;text-align:center;padding:20px">Loading...</div></div>
         </div>
 
         <div class="section">
@@ -669,70 +643,12 @@
 
         function renderModules() {
             const list = el('modules-list');
-            list.innerHTML = modulesData.map((m, mi) => {
-                // Build a lookup from stage name → stage info
-                const stageMap = {};
-                (m.stages || []).forEach(s => { stageMap[s.name] = s; });
-
-                // Render phases if available, else fall back to flat stages
-                let stagesHtml = '';
-                const phases = m.phases && m.phases.length ? m.phases : null;
-                if (phases) {
-                    let stepNum = 1;
-                    stagesHtml = '<div class="stages-list">' + phases.map(phase => {
-                        if (Array.isArray(phase)) {
-                            // Parallel group
-                            const inner = phase.map(name => {
-                                const s = stageMap[name] || {name, requires_consent: false};
-                                const num = stepNum++;
-                                const consentBadge = s.requires_consent
-                                    ? '<span class="stage-consent">requires consent</span>' : '';
-                                return `<div class="stage-row">
-                                    <span class="stage-num">${num}</span>
-                                    <span class="stage-name">${s.name}</span>
-                                    <span class="stage-mode stage-mode-par">parallel</span>
-                                    ${consentBadge}
-                                </div>`;
-                            }).join('');
-                            return `<div class="parallel-group">
-                                <div class="parallel-label">Parallel &mdash; best speed wins</div>
-                                ${inner}
-                            </div>`;
-                        } else {
-                            // Sequential stage
-                            const s = stageMap[phase] || {name: phase, requires_consent: false};
-                            const num = stepNum++;
-                            const consentBadge = s.requires_consent
-                                ? '<span class="stage-consent">requires consent</span>' : '';
-                            return `<div class="stage-row">
-                                <span class="stage-num">${num}</span>
-                                <span class="stage-name">${s.name}</span>
-                                ${consentBadge}
-                            </div>`;
-                        }
-                    }).join('') + '</div>';
-                } else if (m.stages && m.stages.length) {
-                    // Flat list fallback (no phase data)
-                    stagesHtml = '<div class="stages-list">' + m.stages.map((s, si) => {
-                        const consentBadge = s.requires_consent
-                            ? '<span class="stage-consent">requires consent</span>' : '';
-                        return `<div class="stage-row">
-                            <span class="stage-num">${si+1}</span>
-                            <span class="stage-name">${s.name}</span>
-                            ${consentBadge}
-                        </div>`;
-                    }).join('') + '</div>';
-                }
-
+            list.innerHTML = modulesData.map(m => {
                 const enabled = m.enabled !== false;
                 const disabledClass = enabled ? '' : ' mod-card-disabled';
-
-                const isCollapsed = collapsedModules.has(m.name);
-                const colCls = isCollapsed ? ' collapsed' : '';
-
+                const isPipeline = !!(m.stages && m.stages.length);
                 return `<div class="mod-card${disabledClass}">
-                    <div class="mod-header">
-                        <button class="mod-collapse-btn${colCls}" onclick="toggleCollapse('${m.name}', this)" title="Collapse/expand">&#9660;</button>
+                    <div class="mod-header" style="margin-bottom:0">
                         <span class="mod-name">${m.name}</span>
                         <div class="mod-meta">
                             <label class="switch" title="${enabled ? 'Disable' : 'Enable'} module">
@@ -740,16 +656,10 @@
                                 <span class="slider"></span>
                             </label>
                             <span class="badge badge-scanning">Priority ${m.priority}</span>
-                            <span class="badge badge-${m.stages&&m.stages.length?'connection':'idle'}">
-                                ${m.stages&&m.stages.length ? 'Pipeline' : 'Direct'}
+                            <span class="badge badge-${isPipeline ? 'connection' : 'idle'}">
+                                ${isPipeline ? 'Pipeline' : 'Direct'}
                             </span>
                         </div>
-                    </div>
-                    <div class="mod-body${colCls}" id="mod-body-${m.name}">
-                        <div class="mod-desc">${m.class} &mdash; ${m.stages&&m.stages.length
-                            ? m.stages.length+' stages' + (m.phases && m.phases.some(p => Array.isArray(p)) ? ' (has parallel)' : '')
-                            : 'single-step module'}</div>
-                        ${stagesHtml}
                     </div>
                 </div>`;
             }).join('');
@@ -1007,6 +917,40 @@
                 });
         }
 
+        // ----- Quick Connect (auto-bridge) -----
+        function loadAutoBridge() {
+            fetch('/api/auto-bridge').then(r => r.json()).then(s => {
+                const section = el('auto-bridge-section');
+                const on = !!s.enabled;
+                section.innerHTML = `
+                    <div class="toggle-row" style="border:none">
+                        <div class="toggle-label">
+                            <div class="name">Auto-bridge best active connection</div>
+                            <div class="desc">As soon as any module reports a working connection, bridge the highest-scored one to ethernet. Skips the auto-selector's evaluation interval so internet is available immediately. Existing auto-selection still handles later upgrades.</div>
+                        </div>
+                        <label class="switch">
+                            <input type="checkbox" ${on ? 'checked' : ''} onchange="setAutoBridge(this.checked)">
+                            <span class="slider"></span>
+                        </label>
+                    </div>`;
+            });
+        }
+
+        function setAutoBridge(enabled) {
+            fetch('/api/auto-bridge', {
+                method: 'PUT',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({enabled}),
+            }).then(r => r.json()).then(d => {
+                if (d.success) {
+                    toast(enabled ? 'Auto-bridge on' : 'Auto-bridge off');
+                } else {
+                    toast(d.error || 'Failed');
+                }
+                loadAutoBridge();
+            });
+        }
+
         // ----- Ethernet -----
         let ethernetStatus = {};
 
@@ -1177,7 +1121,7 @@
             toast('Parsed — review and save');
         }
 
-        window.addEventListener('load', () => { loadHostAP(); loadEthernet(); loadModules(); loadKnownNetworks(); });
+        window.addEventListener('load', () => { loadHostAP(); loadAutoBridge(); loadEthernet(); loadModules(); loadKnownNetworks(); });
     </script>
 </body>
 </html>

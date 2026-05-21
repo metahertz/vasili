@@ -70,7 +70,7 @@ class SubprocessMockFactory:
                         args=cmd, returncode=1, stdout='', stderr=NMCLI_CONNECT_FAILURE
                     )
 
-            # iptables commands (for NetworkBridge)
+            # iptables commands (for ConnectionShare / HostAP NAT)
             if 'iptables' in cmd_str:
                 return CompletedProcess(args=cmd, returncode=0, stdout='', stderr='')
 

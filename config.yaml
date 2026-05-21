@@ -32,6 +32,7 @@ modules:
   enabled:
      - openNetworkPipeline
      - wpa2Network
+     - wpa3Network
      - wepNetwork
 
 # Network scanner settings
