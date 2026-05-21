@@ -1279,6 +1279,30 @@ def _get_device_ssid_map() -> dict[str, str]:
     return out
 
 
+def _classify_nmcli_connect_error(stderr: str) -> str:
+    """Classify `nmcli device wifi connect` stderr into a failure kind.
+
+    Returns one of:
+      - 'auth'            — wrong/missing secrets; retrying with the same
+                            password won't help
+      - 'ssid_not_found'  — SSID not in NM's current scan list; usually
+                            permanent within the lifetime of one connect()
+                            (the calling pipeline does its own re-scans)
+      - 'transient'       — anything else worth a retry
+    """
+    if not stderr:
+        return 'transient'
+    s = stderr.lower()
+    if ('secrets were required' in s
+            or 'secrets were not provided' in s
+            or '802.1x supplicant' in s
+            or '(7)' in s):
+        return 'auth'
+    if 'no network with ssid' in s or 'ssid was not found' in s:
+        return 'ssid_not_found'
+    return 'transient'
+
+
 def _nm_disable_autoconnect_for_interface(iface: str) -> int:
     """Disable autoconnect on every NM profile bound to this iface.
 
@@ -1467,6 +1491,7 @@ class WifiCard:
         password: Optional[str] = None,
         max_retries: int = 3,
         base_delay: float = 1.0,
+        attempt_timeout: float = 10.0,
     ) -> bool:
         """
         Connect to a WiFi network using this card with automatic retry logic.
@@ -1476,6 +1501,7 @@ class WifiCard:
             password: Optional password for encrypted networks
             max_retries: Maximum number of connection attempts (default: 3)
             base_delay: Base delay in seconds between retries, doubles each attempt (default: 1.0)
+            attempt_timeout: Per-attempt nmcli subprocess timeout in seconds (default: 10.0)
 
         Returns:
             True if connection successful, False otherwise
@@ -1523,7 +1549,9 @@ class WifiCard:
                     cmd.extend(['bssid', network.bssid])
 
                 # Execute the connection command
-                result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+                result = subprocess.run(
+                    cmd, capture_output=True, text=True, timeout=attempt_timeout
+                )
 
                 if result.returncode == 0:
                     logger.info(f'Successfully connected to {network.ssid} on {self.interface}')
@@ -1542,9 +1570,17 @@ class WifiCard:
                     return True
                 else:
                     last_error = f'nmcli error: {result.stderr}'
+                    kind = _classify_nmcli_connect_error(result.stderr)
                     logger.warning(
-                        f'Attempt {attempt}/{max_retries} failed for {network.ssid}: {result.stderr}'
+                        f'Attempt {attempt}/{max_retries} failed for {network.ssid} '
+                        f'[{kind}]: {result.stderr.strip()}'
                     )
+                    if kind in ('auth', 'ssid_not_found'):
+                        logger.error(
+                            f'Permanent failure ({kind}) for {network.ssid} on '
+                            f'{self.interface}; skipping remaining retries.'
+                        )
+                        break
 
             except subprocess.TimeoutExpired:
                 last_error = 'Connection timed out'
@@ -1563,7 +1599,7 @@ class WifiCard:
                 time.sleep(delay)
 
         logger.error(
-            f'Failed to connect to {network.ssid} after {max_retries} attempts. Last error: {last_error}'
+            f'Failed to connect to {network.ssid} after {attempt} attempt(s). Last error: {last_error}'
         )
         # NB: do NOT clear self.in_use here. Lease ownership belongs to
         # WifiCardManager.lease_card / return_card; a failed connect attempt
@@ -2107,6 +2143,66 @@ class WifiCardManager:
         with self._lock:
             return sum(1 for card in self.cards if not card.in_use)
 
+    def audit_lease_state(self) -> list[str]:
+        """Compare in-memory ``card.in_use`` flags against persisted leases.
+
+        Detects two drift classes that have historically caused scheduler
+        bugs (see commit 1d449d1 ``Bug in card lease logic``):
+
+          - **in_use without lease**: ``card.in_use=True`` but no live lease
+            row exists in MongoDB. Means we think we hold it but the store
+            doesn't agree — a held-forever orphan that blocks all future
+            ``lease_card`` calls for that interface.
+          - **lease without in_use**: a live lease row exists for a card
+            whose ``in_use=False``. Means ``return_card`` partially failed
+            (DB release didn't happen, e.g. transient Mongo error) and the
+            row will block other holders until the TTL expires.
+
+        Returns the list of human-readable violations (empty = healthy).
+        Violations are also logged at ERROR so periodic callers needn't
+        check the return value to surface problems.
+
+        The HostAP slot (``_hostap_card``) is deliberately excluded: it
+        manages ``in_use`` directly without going through the lease store,
+        and reporting it would be a permanent false positive.
+        """
+        violations: list[str] = []
+        if not self.lease_store.is_available():
+            return violations
+
+        with self._lock:
+            hostap_iface = self._hostap_card.interface if self._hostap_card else None
+            in_memory = {c.interface: c.in_use for c in self.cards
+                         if c.interface != hostap_iface}
+
+        try:
+            live_leases = {row['interface']: row
+                           for row in self.lease_store.get_all_leases()}
+        except Exception as e:
+            logger.error(f'audit_lease_state: failed to read leases: {e}')
+            return violations
+
+        for iface, in_use in in_memory.items():
+            has_lease = iface in live_leases
+            if in_use and not has_lease:
+                msg = (
+                    f'LEASE INVARIANT VIOLATION: {iface}.in_use=True but no '
+                    f'live lease row exists. Orphaned in-memory lease — card '
+                    f'will never be re-leased until vasili restarts.'
+                )
+                logger.error(msg)
+                violations.append(msg)
+            elif (not in_use) and has_lease:
+                holder = live_leases[iface].get('holder', '<unknown>')
+                msg = (
+                    f'LEASE INVARIANT VIOLATION: {iface}.in_use=False but DB '
+                    f"lease row held by '{holder}' is still live. Orphan "
+                    f'lease row blocks other holders until TTL expiry.'
+                )
+                logger.error(msg)
+                violations.append(msg)
+        return violations
+
     def has_cards(self) -> bool:
         """Check if any WiFi cards are available."""
         with self._lock:
@@ -2346,17 +2442,28 @@ class ConnectionMonitor:
     """
     Monitors active WiFi connections and triggers reconnection when drops are detected.
 
-    This class runs a background thread that periodically checks the status of
-    monitored connections and automatically attempts to reconnect when a
-    connection is lost.
+    Two delivery paths exist:
+      - **D-Bus path** (preferred): subscribes to NetworkManager's
+        `org.freedesktop.NetworkManager.Device.StateChanged` and reacts on
+        transitions out of ACTIVATED in sub-second time, with no nmcli polling.
+      - **Poll path** (fallback): runs the legacy `is_connected()` / `get_connected_ssid()`
+        check every `check_interval` seconds. Used when dbus-python / GLib aren't
+        importable (CI, slim dev environments) or when NM isn't on the bus.
     """
+
+    # NetworkManager NMDeviceState values; see
+    # https://developer.gnome.org/NetworkManager/stable/nm-dbus-types.html
+    _NM_STATE_DISCONNECTED = 30
+    _NM_STATE_ACTIVATED = 100
+    _NM_STATE_FAILED = 120
 
     def __init__(self, check_interval: float = 10.0, max_reconnect_attempts: int = 5):
         """
         Initialize the connection monitor.
 
         Args:
-            check_interval: How often to check connections in seconds (default: 10)
+            check_interval: Poll-path tick interval in seconds (default: 10).
+                Unused on the D-Bus path (signals are pushed).
             max_reconnect_attempts: Maximum reconnection attempts before giving up (default: 5)
         """
         self.check_interval = check_interval
@@ -2366,12 +2473,20 @@ class ConnectionMonitor:
         self._monitor_thread: Optional[threading.Thread] = None
         self._lock = threading.Lock()
         self._reconnect_callbacks: list = []
+        # Shared between the poll and D-Bus paths so they can't race on the same card.
+        self._reconnect_attempts: dict[str, int] = {}
+        self._handler_locks: dict[str, threading.Lock] = {}
+        # D-Bus path state — populated only when GLib mainloop starts cleanly.
+        self._dbus_loop = None
+        self._dbus_thread: Optional[threading.Thread] = None
+        self._using_dbus = False
 
     def add_card(self, card: WifiCard):
         """Add a card to be monitored for connection drops."""
         with self._lock:
             if card not in self._monitored_cards:
                 self._monitored_cards.append(card)
+                self._handler_locks.setdefault(card.interface, threading.Lock())
                 logger.info(f'Added {card.interface} to connection monitor')
 
     def remove_card(self, card: WifiCard):
@@ -2386,27 +2501,167 @@ class ConnectionMonitor:
         self._reconnect_callbacks.append(callback)
 
     def start(self):
-        """Start the connection monitoring thread."""
+        """Start the connection monitoring thread.
+
+        Tries the D-Bus signal path first; falls back to polling if dbus-python /
+        GLib / NetworkManager on the bus aren't all available.
+        """
         if self._monitoring:
             return
 
         self._monitoring = True
-        self._monitor_thread = threading.Thread(target=self._monitor_worker, daemon=True)
-        self._monitor_thread.start()
-        logger.info('Connection monitor started')
+        if self._try_start_dbus():
+            self._using_dbus = True
+            logger.info('Connection monitor started (D-Bus signal path)')
+        else:
+            self._using_dbus = False
+            self._monitor_thread = threading.Thread(target=self._poll_worker, daemon=True)
+            self._monitor_thread.start()
+            logger.info('Connection monitor started (poll path)')
 
     def stop(self):
         """Stop the connection monitoring thread."""
         self._monitoring = False
+        if self._dbus_loop is not None:
+            try:
+                self._dbus_loop.quit()
+            except Exception as e:
+                logger.debug(f'Error stopping D-Bus mainloop: {e}')
+        if self._dbus_thread:
+            self._dbus_thread.join(timeout=2.0)
+            self._dbus_thread = None
         if self._monitor_thread:
             self._monitor_thread.join(timeout=self.check_interval + 1)
             self._monitor_thread = None
+        self._dbus_loop = None
+        self._using_dbus = False
         logger.info('Connection monitor stopped')
 
-    def _monitor_worker(self):
-        """Background worker that monitors connections and triggers reconnection."""
-        reconnect_attempts: dict[str, int] = {}
+    def _try_start_dbus(self) -> bool:
+        """Wire up NM D-Bus signal subscription. Returns False on any failure."""
+        try:
+            import dbus
+            from dbus.mainloop.glib import DBusGMainLoop
+            from gi.repository import GLib
+        except ImportError as e:
+            logger.info(f'D-Bus monitor unavailable ({e}); will poll instead')
+            return False
 
+        try:
+            DBusGMainLoop(set_as_default=True)
+            bus = dbus.SystemBus()
+            # Probe NM exists; this raises if NetworkManager isn't on the bus.
+            bus.get_object('org.freedesktop.NetworkManager', '/org/freedesktop/NetworkManager')
+            bus.add_signal_receiver(
+                self._on_device_state_changed,
+                signal_name='StateChanged',
+                dbus_interface='org.freedesktop.NetworkManager.Device',
+                path_keyword='path',
+            )
+            self._dbus_loop = GLib.MainLoop()
+            self._dbus_thread = threading.Thread(target=self._dbus_loop.run, daemon=True)
+            self._dbus_thread.start()
+            return True
+        except Exception as e:
+            logger.warning(f'D-Bus monitor init failed ({e}); falling back to polling')
+            return False
+
+    def _on_device_state_changed(self, new_state, old_state, reason, path=None):
+        """NM Device StateChanged handler — runs on the GLib mainloop thread."""
+        try:
+            new_s = int(new_state)
+            old_s = int(old_state)
+        except Exception:
+            return
+        # Only react when we just *lost* an active connection. Transitions
+        # into ACTIVATED, or churn between non-active states, aren't drops.
+        if old_s != self._NM_STATE_ACTIVATED:
+            return
+        if new_s not in (self._NM_STATE_DISCONNECTED, self._NM_STATE_FAILED):
+            return
+        iface = self._resolve_iface_from_path(path)
+        if not iface:
+            return
+        card = self._find_card_by_iface(iface)
+        if card is None or card._connected_network is None:
+            return
+        # Don't block the GLib thread; reconnect() takes seconds.
+        threading.Thread(
+            target=self._handle_drop, args=(card,), daemon=True
+        ).start()
+
+    def _resolve_iface_from_path(self, path) -> Optional[str]:
+        """Look up the Linux iface name (wlan0, …) for an NM Device object path."""
+        if not path:
+            return None
+        try:
+            import dbus
+            bus = dbus.SystemBus()
+            dev = bus.get_object('org.freedesktop.NetworkManager', path)
+            props = dbus.Interface(dev, 'org.freedesktop.DBus.Properties')
+            return str(props.Get('org.freedesktop.NetworkManager.Device', 'Interface'))
+        except Exception as e:
+            logger.debug(f'Failed to resolve device path {path}: {e}')
+            return None
+
+    def _find_card_by_iface(self, iface: str) -> Optional[WifiCard]:
+        with self._lock:
+            for card in self._monitored_cards:
+                if card.interface == iface:
+                    return card
+        return None
+
+    def _handle_drop(self, card: WifiCard) -> None:
+        """Run the reconnect-attempt state machine for one dropped card.
+
+        Shared between the poll path and the D-Bus signal path. The per-card
+        lock serialises overlapping triggers (e.g. flapping causes multiple
+        StateChanged signals in quick succession).
+        """
+        lock = self._handler_locks.setdefault(card.interface, threading.Lock())
+        if not lock.acquire(blocking=False):
+            # Another drop is already being handled for this card; skip.
+            return
+        try:
+            if card._connected_network is None:
+                return
+            expected_ssid = card._connected_network.ssid
+            attempts = self._reconnect_attempts.get(card.interface, 0)
+
+            if attempts >= self.max_reconnect_attempts:
+                logger.error(
+                    f'Max reconnect attempts ({self.max_reconnect_attempts}) reached for '
+                    f'{card.interface}. Giving up on {expected_ssid}.'
+                )
+                card._connected_network = None
+                card._connection_password = None
+                self._reconnect_attempts[card.interface] = 0
+                self._notify_callbacks(card, success=False)
+                return
+
+            logger.warning(
+                f'Connection dropped on {card.interface} (expected: {expected_ssid}). '
+                f'Attempting reconnect ({attempts + 1}/{self.max_reconnect_attempts})...'
+            )
+            self._reconnect_attempts[card.interface] = attempts + 1
+            success = card.reconnect(max_retries=2, base_delay=0.5)
+            if success:
+                logger.info(f'Successfully reconnected {card.interface} to {expected_ssid}')
+                self._reconnect_attempts[card.interface] = 0
+                self._notify_callbacks(card, success=True)
+            else:
+                logger.warning(
+                    f'Reconnection attempt {attempts + 1} failed for {card.interface}'
+                )
+        finally:
+            lock.release()
+
+    def _poll_worker(self):
+        """Fallback worker: periodically check health and dispatch drops.
+
+        Used only when the D-Bus path can't start (no dbus-python, no GLib,
+        or NetworkManager not on the system bus).
+        """
         while self._monitoring:
             with self._lock:
                 cards_to_check = list(self._monitored_cards)
@@ -2414,8 +2669,6 @@ class ConnectionMonitor:
             for card in cards_to_check:
                 if not self._monitoring:
                     break
-
-                # Only check cards that should be connected
                 if card._connected_network is None:
                     continue
 
@@ -2424,46 +2677,11 @@ class ConnectionMonitor:
                 current_ssid = card.get_connected_ssid() if is_connected else None
 
                 if is_connected and current_ssid == expected_ssid:
-                    # Connection is healthy, reset reconnect counter
-                    reconnect_attempts[card.interface] = 0
+                    self._reconnect_attempts[card.interface] = 0
                     continue
 
-                # Connection dropped or connected to wrong network
-                attempts = reconnect_attempts.get(card.interface, 0)
+                self._handle_drop(card)
 
-                if attempts >= self.max_reconnect_attempts:
-                    logger.error(
-                        f'Max reconnect attempts ({self.max_reconnect_attempts}) reached for '
-                        f'{card.interface}. Giving up on {expected_ssid}.'
-                    )
-                    # Clear the network so we stop trying
-                    card._connected_network = None
-                    card._connection_password = None
-                    reconnect_attempts[card.interface] = 0
-                    self._notify_callbacks(card, success=False)
-                    continue
-
-                logger.warning(
-                    f'Connection dropped on {card.interface} (expected: {expected_ssid}, '
-                    f'current: {current_ssid}). Attempting reconnect ({attempts + 1}/'
-                    f'{self.max_reconnect_attempts})...'
-                )
-
-                reconnect_attempts[card.interface] = attempts + 1
-
-                # Attempt reconnection
-                success = card.reconnect(max_retries=2, base_delay=0.5)
-
-                if success:
-                    logger.info(f'Successfully reconnected {card.interface} to {expected_ssid}')
-                    reconnect_attempts[card.interface] = 0
-                    self._notify_callbacks(card, success=True)
-                else:
-                    logger.warning(
-                        f'Reconnection attempt {attempts + 1} failed for {card.interface}'
-                    )
-
-            # Wait before next check
             time.sleep(self.check_interval)
 
     def _notify_callbacks(self, card: WifiCard, success: bool):

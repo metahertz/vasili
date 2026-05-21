@@ -3,7 +3,7 @@
 import pytest
 from unittest.mock import patch
 from subprocess import CompletedProcess
-from vasili import WifiCard, WifiNetwork
+from vasili import WifiCard, WifiNetwork, _classify_nmcli_connect_error
 
 
 @pytest.mark.unit
@@ -242,3 +242,105 @@ class TestWifiCard:
         assert len(networks1) == 4
         assert len(networks2) == 4
         assert networks1[0].ssid == networks2[0].ssid
+
+
+@pytest.mark.unit
+class TestClassifyNmcliConnectError:
+    """Classifier should fail-fast on permanent errors and retry transient ones."""
+
+    @pytest.mark.parametrize('stderr', [
+        'Error: Connection activation failed: (7) Secrets were required, but not provided.',
+        'Error: Connection activation failed: (7) Secrets were not provided.',
+        'Error: 802.1X supplicant failed.',
+    ])
+    def test_auth_failures(self, stderr):
+        assert _classify_nmcli_connect_error(stderr) == 'auth'
+
+    @pytest.mark.parametrize('stderr', [
+        "Error: No network with SSID 'Foo' found.",
+        'Error: ssid was not found.',
+    ])
+    def test_ssid_not_found(self, stderr):
+        assert _classify_nmcli_connect_error(stderr) == 'ssid_not_found'
+
+    @pytest.mark.parametrize('stderr', [
+        '',
+        'Error: Connection activation failed: (4) The connection is not available.',
+        'Error: Timeout expired.',
+        'something unexpected',
+    ])
+    def test_transient_or_empty(self, stderr):
+        assert _classify_nmcli_connect_error(stderr) == 'transient'
+
+
+@pytest.mark.unit
+class TestWifiCardConnectFailFast:
+    """connect() must skip remaining retries on permanent failures."""
+
+    @staticmethod
+    def _isdir_mock():
+        import os.path as real_ospath
+        from tests.fixtures.mock_data import WIRELESS_INTERFACES
+
+        def mock_isdir(path):
+            if '/sys/class/net/' in path and '/wireless' in path:
+                iface = path.split('/sys/class/net/')[1].split('/wireless')[0]
+                return iface in WIRELESS_INTERFACES
+            return real_ospath.isdir(path)
+        return mock_isdir
+
+    def _run_connect_with_stderr(self, stderr_text):
+        """Drive WifiCard.connect against an nmcli that always returns this stderr.
+
+        Returns the number of times the `nmcli ... wifi connect` command was
+        invoked, so we can tell fail-fast (1) from full-retry (3).
+        """
+        connect_call_count = {'n': 0}
+
+        def fake_run(cmd, *args, **kwargs):
+            cmd_str = ' '.join(cmd) if isinstance(cmd, list) else str(cmd)
+            if 'wifi' in cmd_str and 'connect' in cmd_str:
+                connect_call_count['n'] += 1
+                return CompletedProcess(args=cmd, returncode=1, stdout='', stderr=stderr_text)
+            # ip link set up / nmcli disconnect / anything else: succeed silently.
+            return CompletedProcess(args=cmd, returncode=0, stdout='', stderr='')
+
+        with (
+            patch('os.path.isdir', side_effect=self._isdir_mock()),
+            patch('subprocess.run', side_effect=fake_run),
+            patch('time.sleep'),
+        ):
+            card = WifiCard('wlan0')
+            card.in_use = True
+            network = WifiNetwork(
+                ssid='SecureHome',
+                bssid='AA:BB:CC:DD:EE:FF',
+                signal_strength=70,
+                channel=11,
+                encryption_type='WPA2',
+                is_open=False,
+            )
+            result = card.connect(network, password='wrong', max_retries=3)
+        return result, connect_call_count['n'], card
+
+    def test_auth_failure_breaks_after_first_attempt(self):
+        result, attempts, card = self._run_connect_with_stderr(
+            'Error: Connection activation failed: (7) Secrets were required, but not provided.'
+        )
+        assert result is False
+        assert attempts == 1  # fail-fast: no retries on bad password
+        assert card.in_use is True  # lease still held
+
+    def test_ssid_not_found_breaks_after_first_attempt(self):
+        result, attempts, _ = self._run_connect_with_stderr(
+            "Error: No network with SSID 'SecureHome' found."
+        )
+        assert result is False
+        assert attempts == 1
+
+    def test_transient_failure_retries_all_attempts(self):
+        result, attempts, _ = self._run_connect_with_stderr(
+            'Error: Connection activation failed: (4) The connection is not available.'
+        )
+        assert result is False
+        assert attempts == 3  # full retry budget consumed

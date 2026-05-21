@@ -2,7 +2,7 @@
 
 import pytest
 import threading
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 from vasili import WifiCardManager, WifiCard
 
 
@@ -299,3 +299,91 @@ class TestWifiCardManager:
         manager.return_card(card)
         conn_card = manager.lease_card(for_scanning=False)
         assert conn_card is None
+
+
+@pytest.mark.unit
+class TestAuditLeaseState:
+    """audit_lease_state() catches drift between card.in_use and the lease store."""
+
+    def _install_mock_store(self, manager, live_leases):
+        """Replace the manager's lease_store with a stub backed by `live_leases`.
+
+        `live_leases` is a list of dicts as the real store returns them, e.g.
+        [{'interface': 'wlan1', 'holder': 'pipeline-X'}].
+        """
+        store = MagicMock()
+        store.is_available.return_value = True
+        store.get_all_leases.return_value = list(live_leases)
+        manager.lease_store = store
+        return store
+
+    def test_healthy_state_has_no_violations(self, mock_subprocess, mock_netifaces):
+        manager = WifiCardManager()
+        # In-memory + DB both say nothing is leased.
+        self._install_mock_store(manager, live_leases=[])
+        assert manager.audit_lease_state() == []
+
+    def test_in_use_without_lease_is_caught(self, mock_subprocess, mock_netifaces):
+        """The bug class behind commit 1d449d1: in-memory leased, DB has no row."""
+        manager = WifiCardManager()
+        self._install_mock_store(manager, live_leases=[])
+        # Simulate the bug: connect() failure path used to clear in_use; the
+        # mirror image is some path that *sets* in_use without taking a lease.
+        manager.cards[0].in_use = True
+
+        violations = manager.audit_lease_state()
+        assert len(violations) == 1
+        assert manager.cards[0].interface in violations[0]
+        assert 'in_use=True but no live lease' in violations[0]
+
+    def test_lease_without_in_use_is_caught(self, mock_subprocess, mock_netifaces):
+        """Orphan DB row from a partially-failed return_card()."""
+        manager = WifiCardManager()
+        iface = manager.cards[0].interface
+        self._install_mock_store(
+            manager,
+            live_leases=[{'interface': iface, 'holder': 'pipeline-Z'}],
+        )
+        # in-memory says it's free
+        manager.cards[0].in_use = False
+
+        violations = manager.audit_lease_state()
+        assert len(violations) == 1
+        assert iface in violations[0]
+        assert "pipeline-Z" in violations[0]
+        assert 'in_use=False but DB' in violations[0]
+
+    def test_hostap_card_is_excluded(self, mock_subprocess, mock_netifaces):
+        """HostAP slot deliberately mutates in_use without a lease row — must not false-positive."""
+        manager = WifiCardManager()
+        self._install_mock_store(manager, live_leases=[])
+        # Pin a card as HostAP — the manager exposes set_hostap_card; if it's
+        # missing on this code path, set the slot directly to model the state.
+        hostap_card = manager.cards[0]
+        hostap_card.in_use = True
+        manager._hostap_card = hostap_card
+
+        assert manager.audit_lease_state() == []
+
+    def test_violations_are_logged_at_error(self, mock_subprocess, mock_netifaces):
+        manager = WifiCardManager()
+        self._install_mock_store(manager, live_leases=[])
+        manager.cards[0].in_use = True
+
+        with patch('vasili.logger') as mock_logger:
+            manager.audit_lease_state()
+            assert any(
+                'LEASE INVARIANT VIOLATION' in str(call.args[0])
+                for call in mock_logger.error.call_args_list
+            )
+
+    def test_no_op_when_lease_store_unavailable(self, mock_subprocess, mock_netifaces):
+        """When MongoDB is down, audit can't compare anything — return empty, don't crash."""
+        manager = WifiCardManager()
+        store = MagicMock()
+        store.is_available.return_value = False
+        manager.lease_store = store
+        manager.cards[0].in_use = True
+
+        assert manager.audit_lease_state() == []
+        store.get_all_leases.assert_not_called()
