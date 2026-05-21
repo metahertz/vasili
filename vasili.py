@@ -4315,7 +4315,25 @@ class WifiManager:
                                        result: ConnectionResult):
         """Process a successful connection result (thread-safe)."""
         with self._connections_lock:
-            self.suitable_connections.append(result)
+            # Parallel workers can both succeed on the same SSID via
+            # different BSSIDs; only the first one keeps its card.
+            duplicate = any(
+                c.connected and c.network.ssid == result.network.ssid
+                for c in self.suitable_connections
+            ) if result.network.ssid else False
+            if not duplicate:
+                self.suitable_connections.append(result)
+
+        if duplicate:
+            logger.info(
+                f'Duplicate SSID {result.network.ssid} on {result.interface} '
+                '— another card already holds this network, releasing card'
+            )
+            card = self._get_card_for_interface(result.interface)
+            if card:
+                card.disconnect()
+                self.card_manager.return_card(card)
+            return
 
         # Use result.network which has the resolved SSID for hidden networks
         rnet = result.network
@@ -4416,13 +4434,24 @@ class WifiManager:
                 # Build work queue: (network, module) pairs to test
                 work_items = []
                 connected_bssids = set()
+                connected_ssids = set()
                 with self._connections_lock:
                     for conn in self.suitable_connections:
                         if conn.connected:
                             connected_bssids.add(conn.network.bssid)
+                            if conn.network.ssid:
+                                connected_ssids.add(conn.network.ssid)
 
+                # In-flight SSIDs queued so far this cycle — prevents two
+                # BSSIDs of the same SSID being submitted to parallel workers.
+                queued_ssids: set[str] = set()
                 for network in networks:
                     if network.bssid in connected_bssids:
+                        continue
+                    if network.ssid and (
+                        network.ssid in connected_ssids
+                        or network.ssid in queued_ssids
+                    ):
                         continue
                     for module in self.modules:
                         mod_name = getattr(module, 'name', module.__class__.__name__)
@@ -4435,6 +4464,8 @@ class WifiManager:
                                 continue
                         if module.can_connect(network):
                             work_items.append((network, module))
+                            if network.ssid:
+                                queued_ssids.add(network.ssid)
                             break  # First matching module per network
 
                 if not work_items:
