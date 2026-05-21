@@ -344,15 +344,21 @@
             if (!conns || !conns.length) { list.innerHTML = '<div class="empty">None</div>'; return; }
             list.innerHTML = conns.map((c, i) => {
                 const n = c.network;
+                const action = c.bridged
+                    ? '<span class="badge badge-connection">BRIDGED</span>'
+                    : `<button class="btn btn-primary btn-sm" onclick="useConnection(${i})">Bridge</button>`;
+                const bw = c.bridged
+                    ? ` <span class="bw" data-iface="${c.interface}"></span>`
+                    : '';
                 return `<div class="conn-item">
                     <div style="display:flex;justify-content:space-between;align-items:center">
                         <div><span class="ssid">${n.ssid||'(Hidden)'}</span>${n.uncloaked?' <span class="badge badge-uncloaked">UNCLOAKED</span>':''} <span class="method">${c.connection_method} via ${c.interface}</span></div>
-                        <button class="btn btn-primary btn-sm" onclick="useConnection(${i})">Bridge</button>
+                        ${action}
                     </div>
                     <div class="conn-stats">
                         <span class="dl">${c.download_speed.toFixed(1)} down</span>
                         <span class="ul">${c.upload_speed.toFixed(1)} up</span>
-                        <span class="pg">${c.ping.toFixed(0)}ms</span>
+                        <span class="pg">${c.ping.toFixed(0)}ms</span>${bw}
                     </div></div>`;
             }).join('');
         }
@@ -541,6 +547,15 @@
             list.innerHTML = entries.map(([iface, bw]) =>
                 `<div class="bw-item"><span class="card-iface">${iface}</span><span><span class="bw-rx">${fmtB(bw.rx_rate)}/s</span> | <span class="bw-tx">${fmtB(bw.tx_rate)}/s</span></span></div>`
             ).join('');
+            // Poke live throughput into any bridged conn-item — text-node only,
+            // no full re-render. bytes/s -> Mbps.
+            document.querySelectorAll('#conn-list .bw[data-iface]').forEach(span => {
+                const bw = data[span.dataset.iface];
+                if (!bw) { span.textContent = ''; return; }
+                const rx = (bw.rx_rate * 8 / 1e6).toFixed(1);
+                const tx = (bw.tx_rate * 8 / 1e6).toFixed(1);
+                span.textContent = ` | ${rx}↓ / ${tx}↑ Mbps`;
+            });
         }
 
         function updateSavedNetworks(data) {

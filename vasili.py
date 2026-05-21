@@ -1653,22 +1653,15 @@ class WifiCard:
             return False
 
     def get_connected_ssid(self) -> Optional[str]:
-        """Get the SSID of the currently connected network, if any."""
-        try:
-            result = subprocess.run(
-                ['nmcli', '-t', '-f', 'DEVICE,CONNECTION', 'device', 'status'],
-                capture_output=True,
-                text=True,
-            )
-            for line in result.stdout.strip().split('\n'):
-                if ':' in line:
-                    device, connection = line.split(':', 1)
-                    if device == self.interface and connection and connection != '--':
-                        return connection
-            return None
-        except Exception as e:
-            logger.error(f'Error getting connected SSID for {self.interface}: {e}')
-            return None
+        """Get the SSID of the currently connected network, if any.
+
+        Reads the on-air SSID via `iw` rather than nmcli's CONNECTION field,
+        which returns the *profile name* (e.g. "Will there be a piano? 1"
+        after duplicate profiles accumulate). See _get_device_ssid_map for
+        the same rationale — comparing profile name to SSID makes the
+        ConnectionMonitor flap forever.
+        """
+        return _get_device_ssid_map().get(self.interface)
 
     def reconnect(self, max_retries: int = 3, base_delay: float = 1.0) -> bool:
         """
@@ -4660,11 +4653,23 @@ class WifiManager:
                             if conn.network.ssid:
                                 connected_ssids.add(conn.network.ssid)
 
+                # Don't schedule connect attempts to our own HostAP SSID —
+                # the scanner will see it on the air just like any other
+                # network, but attempting to associate is wasted work and
+                # produces ssid_not_found churn on connection cards.
+                hostap_ssid = (
+                    self.hostap.ssid
+                    if self.hostap and self.hostap.is_active
+                    else None
+                )
+
                 # In-flight SSIDs queued so far this cycle — prevents two
                 # BSSIDs of the same SSID being submitted to parallel workers.
                 queued_ssids: set[str] = set()
                 for network in networks:
                     if network.bssid in connected_bssids:
+                        continue
+                    if hostap_ssid and network.ssid == hostap_ssid:
                         continue
                     if network.ssid and (
                         network.ssid in connected_ssids
@@ -4860,6 +4865,10 @@ def emit_connections_update():
         connections_data = []
         with wifi_manager._connections_lock:
             conns_snapshot = list(wifi_manager.suitable_connections)
+        bridge = wifi_manager.active_bridge
+        bridged_iface = (
+            bridge.wifi_interface if bridge and bridge.is_active else None
+        )
         for conn in conns_snapshot:
             conn_dict = {
                 'network': {
@@ -4877,6 +4886,7 @@ def emit_connections_update():
                 'connected': conn.connected,
                 'connection_method': conn.connection_method,
                 'interface': conn.interface,
+                'bridged': (conn.interface == bridged_iface),
             }
             connections_data.append(conn_dict)
         socketio.emit('connections_update', {'connections': connections_data})
@@ -4911,7 +4921,16 @@ def get_status():
 
 @app.route('/api/connections')
 def get_connections():
-    return jsonify([vars(conn) for conn in wifi_manager.suitable_connections])
+    bridge = wifi_manager.active_bridge
+    bridged_iface = (
+        bridge.wifi_interface if bridge and bridge.is_active else None
+    )
+    out = []
+    for conn in wifi_manager.suitable_connections:
+        d = vars(conn).copy()
+        d['bridged'] = (conn.interface == bridged_iface)
+        out.append(d)
+    return jsonify(out)
 
 
 @app.route('/api/scan_results')
@@ -5334,6 +5353,7 @@ def set_ethernet_mode():
 def use_connection(index):
     success = wifi_manager.use_connection(index)
     emit_status_update()
+    emit_connections_update()
     return jsonify({'success': success})
 
 
@@ -5341,6 +5361,7 @@ def use_connection(index):
 def stop_connection():
     wifi_manager.stop_current_connection()
     emit_status_update()
+    emit_connections_update()
     return jsonify({'success': True})
 
 
