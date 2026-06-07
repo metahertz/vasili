@@ -261,9 +261,19 @@ def autofill_form(form: FormData, identity: dict = None) -> dict[str, str]:
             # Preserve server-set value (CSRF tokens, session IDs)
             data[f.name] = f.value
         elif category == 'submit':
-            # Include submit button value if it has a name
+            # Include the submit control. Named submits must be sent as
+            # name=value (the portal often keys off the button name). Unnamed
+            # submits get the sentinel name so callers still know a submit
+            # exists, but the sentinel is stripped before the request is sent
+            # (see _strip_submit_sentinel / the auth module) so it never ends
+            # up in the actual POST body as a bogus field.
             if f.name and f.name != '__submit__':
                 data[f.name] = f.value or '1'
+            else:
+                # Unnamed submit: record its presence with the sentinel so an
+                # otherwise-empty form still carries the submit signal. Don't
+                # silently drop it — many portals reject a truly empty body.
+                data.setdefault('__submit__', f.value or '1')
         elif category == 'terms_checkbox' or category == 'marketing_optin':
             data[f.name] = f.value or 'on'
         elif category == 'checkbox':
@@ -286,6 +296,17 @@ def autofill_form(form: FormData, identity: dict = None) -> dict[str, str]:
             data[f.name] = f.value or ''
 
     return data
+
+
+def strip_submit_sentinel(data: dict[str, str]) -> dict[str, str]:
+    """Return a copy of POST data with the unnamed-submit sentinel removed.
+
+    ``autofill_form`` records an unnamed submit control under the ``__submit__``
+    sentinel key so callers know the form has a submit. That key is not a real
+    field name and must never be sent over the wire — strip it here right
+    before building the request body.
+    """
+    return {k: v for k, v in data.items() if k != '__submit__'}
 
 
 def parse_and_fill(html: str, base_url: str, identity: dict = None) -> list[tuple[FormData, dict]]:

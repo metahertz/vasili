@@ -33,6 +33,22 @@ When a captive portal is present, these requests return HTTP redirects (302/303)
 ### ✅ Automatic (Implemented)
 - **Click-through**: Portals that just need you to visit a page
 - **Terms acceptance**: Portals with simple accept buttons
+- **Tickbox + single button**: Forms whose only controls are a checkbox and/or
+  one (even unnamed) submit button
+- **JS-only splash pages**: Portals with no real `<form>` — a `<button onclick>`
+  or link that fires the "go online" request — via the headless-browser fallback
+
+Authentication runs in three strategies, cheapest first, and **success is
+confirmed by a real connectivity recheck** (HTTP 204 from a generate_204 URL),
+not by page heuristics:
+
+1. **Smart form parse + autofill** — stdlib HTML parsing, fills/ticks fields,
+   submits (handles named *and* unnamed submit controls).
+2. **Click-through** — follows the redirect for redirect-only portals.
+3. **Headless browser (Playwright/Chromium)** — ticks checkboxes and clicks the
+   accept/continue control for JS-driven portals. Requires the browser to be
+   installed (see *Headless-Browser Fallback* below); **degrades gracefully** —
+   if Playwright/Chromium are absent, strategies 1–2 still run.
 
 ### ⚠️ Manual (Not Automated)
 - **Login required**: Portals requiring username/password
@@ -114,7 +130,43 @@ captive_portal:
 
   # Authentication timeout in seconds
   auth_timeout: 15
+
+  # Headless-browser fallback for JS-only portals (default true). If the
+  # browser isn't installed, this silently no-ops and the HTTP path governs.
+  use_browser: true
+
+  # Browser interaction budget in seconds
+  browser_timeout: 30
 ```
+
+## Headless-Browser Fallback (Playwright/Chromium)
+
+Strategy 3 drives a headless Chromium to solve portals that have no real HTML
+form (JS `onclick`/XHR splash pages). It is **optional** and degrades
+gracefully — if Playwright or Chromium is missing, the lightweight HTTP path
+still runs and the pipeline never crashes.
+
+`deploy.sh` installs this automatically. To set it up manually inside the app's
+virtualenv:
+
+```bash
+# 1) Python package (already in requirements.txt)
+venv/bin/pip install playwright
+
+# 2) Browser binary — pin the cache under the app dir so a root systemd
+#    service finds it regardless of $HOME
+export PLAYWRIGHT_BROWSERS_PATH="$PWD/.playwright"
+venv/bin/python -m playwright install chromium
+
+# 3) OS libraries Chromium needs (apt; arm64-friendly on the Pi)
+sudo env PLAYWRIGHT_BROWSERS_PATH="$PWD/.playwright" \
+    venv/bin/python -m playwright install-deps chromium
+```
+
+The systemd unit (`vasili.service`) sets
+`Environment="PLAYWRIGHT_BROWSERS_PATH=/opt/vasili/.playwright"` so the running
+service uses the same browser the installer downloaded. If the env var is unset
+(e.g. a manual `python vasili.py`), the code defaults to `<repo>/.playwright`.
 
 ## Usage
 
@@ -138,9 +190,12 @@ else:
 
 ## Limitations
 
-- Only handles simple authentication (click-through, terms)
-- Cannot bypass paid WiFi services or login-required portals
-- Some portals use JavaScript or complex flows that require manual intervention
+- Handles unauthenticated portals (click-through, terms, tickbox, single button,
+  and JS-only splash pages via the browser fallback); cannot bypass paid WiFi or
+  login/credential/SMS/social-login portals
+- The headless-browser fallback can't bind a specific source IP, so it relies on
+  the portal being reachable on the connected card's subnet (the usual case);
+  per-interface egress for multi-card setups is a known TODO
 - Detection requires HTTP access (some networks block even test URLs)
 
 ## Privacy & Ethics
@@ -192,7 +247,8 @@ pytest tests/integration/test_captive_portal_flow.py -v
 
 ## Future Enhancements
 
-- [ ] Browser automation for complex portals (Selenium/Playwright)
+- [x] Browser automation for complex portals (Playwright/Chromium) — *done; see Headless-Browser Fallback*
+- [ ] Per-interface egress for the browser fallback (network namespace / policy routing)
 - [ ] Social login support (OAuth flows)
 - [ ] Custom portal scripts per SSID
 - [ ] Manual credential storage for login-required portals

@@ -369,3 +369,36 @@ class TestReconModule:
         mod = ReconModule()
         assert mod.get_data() == {}
         assert mod.get_config_schema() == {}
+
+
+@pytest.mark.unit
+class TestNetworkGroupKey:
+    def test_group_on_uses_ssid(self):
+        from vasili import network_group_key
+        net = _make_network(ssid='TestNet')
+        assert network_group_key(net, group_by_ssid=True) == 'TestNet'
+
+    def test_group_off_uses_ssid_bssid(self):
+        from vasili import network_group_key
+        net = _make_network(ssid='TestNet')
+        assert network_group_key(net, group_by_ssid=False) == 'TestNet|AA:BB:CC:DD:EE:FF'
+
+    def test_empty_ssid_falls_back_to_key_even_when_grouped(self):
+        from vasili import network_group_key
+        net = _make_network(ssid='')
+        # Hidden/empty-SSID networks can't be SSID-grouped meaningfully.
+        assert network_group_key(net, group_by_ssid=True) == '|AA:BB:CC:DD:EE:FF'
+
+    def test_has_consent_passes_grouping_flag(self):
+        consent = MagicMock()
+        consent.has_consent.return_value = True
+        consent.group_by_ssid = True
+        mgr, card = _make_card_manager()
+        pipeline = PipelineModule(
+            mgr, stages=[FakeConsentStage()], consent_manager=consent
+        )
+        net = _make_network(ssid='TestNet')
+        assert pipeline._has_consent('needs_consent', net) is True
+        kwargs = consent.has_consent.call_args.kwargs
+        assert kwargs['group_by_ssid'] is True
+        assert kwargs['ssid'] == 'TestNet'

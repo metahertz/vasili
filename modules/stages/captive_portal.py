@@ -19,6 +19,9 @@ class CaptivePortalStage(PipelineStage):
     name = 'captive_portal'
     requires_consent = False
 
+    # Cached config (populated lazily by _get_stage_config)
+    _stage_config: dict | None = None
+
     def can_run(self, network, card, context):
         return not context.get('has_internet', False)
 
@@ -27,8 +30,13 @@ class CaptivePortalStage(PipelineStage):
             CaptivePortalDetector, CaptivePortalAuthenticator,
         )
 
+        cfg = self._get_stage_config()
         detector = CaptivePortalDetector()
-        authenticator = CaptivePortalAuthenticator(identity=self._get_identity())
+        authenticator = CaptivePortalAuthenticator(
+            identity=self._get_identity(),
+            use_browser=cfg.get('use_browser', True),
+            browser_timeout=cfg.get('browser_timeout', 30),
+        )
 
         time.sleep(1)
 
@@ -87,6 +95,16 @@ class CaptivePortalStage(PipelineStage):
     def _get_identity(self) -> dict:
         return {}
 
+    def _get_stage_config(self) -> dict:
+        """Return merged config (schema defaults + user overrides)."""
+        if self._stage_config is not None:
+            return self._stage_config
+        # Fall back to schema defaults — the PipelineModule config system
+        # will supply overrides at runtime via the module_config store.
+        schema = self.get_config_schema()
+        self._stage_config = {k: v['default'] for k, v in schema.items()}
+        return self._stage_config
+
     def get_config_schema(self):
         return {
             'detection_timeout': {
@@ -96,6 +114,16 @@ class CaptivePortalStage(PipelineStage):
             'auth_timeout': {
                 'type': 'int', 'default': 15,
                 'description': 'Timeout for portal auth requests (seconds)',
+            },
+            'use_browser': {
+                'type': 'bool', 'default': True,
+                'description': 'Enable headless-browser fallback for JS-only / '
+                               'tickbox portals (requires Playwright + Chromium; '
+                               'degrades gracefully if absent)',
+            },
+            'browser_timeout': {
+                'type': 'int', 'default': 30,
+                'description': 'Timeout for the headless-browser fallback (seconds)',
             },
             'autofill_email': {
                 'type': 'str', 'default': 'traveler@vasili.local',

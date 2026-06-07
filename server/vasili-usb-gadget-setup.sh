@@ -85,9 +85,15 @@ setup_boot_config() {
         log "Added dtoverlay=dwc2,dr_mode=peripheral to $config_file"
     fi
 
-    # Ensure dwc2 and g_ether are loaded at boot
+    # We deliberately do NOT use the legacy g_ether monolithic gadget — it binds
+    # the UDC at module-load time, before the Mac's USB-C subsystem may be
+    # ready. The Pi 5's dwc2 has no PHY VBUS sensing, so a missed enumeration
+    # is silent and unrecoverable without a manual cycle. Instead we load
+    # libcomposite and compose the gadget post-boot via configfs (see
+    # setup_gadget_compose), with a watchdog that cycles the UDC binding when
+    # the host fails to enumerate.
     local modules_file="/etc/modules"
-    for mod in dwc2 g_ether; do
+    for mod in dwc2 libcomposite; do
         if ! grep -q "^${mod}$" "$modules_file" 2>/dev/null; then
             echo "$mod" >> "$modules_file"
             log "Added $mod to $modules_file"
@@ -96,9 +102,129 @@ setup_boot_config() {
         fi
     done
 
+    # Purge legacy g_ether from module-load configs — it auto-binds the UDC.
+    for f in "$modules_file" /etc/modules-load.d/modules.conf; do
+        if [[ -f "$f" ]] && grep -q '^g_ether$' "$f"; then
+            sed -i '/^g_ether$/d' "$f"
+            log "Removed g_ether from $f"
+        fi
+    done
+
+    # Strip g_ether from kernel cmdline (Ubuntu Pi A/B layout uses current/new).
+    for cmdline in /boot/firmware/cmdline.txt \
+                   /boot/firmware/current/cmdline.txt \
+                   /boot/firmware/new/cmdline.txt; do
+        if [[ -f "$cmdline" ]] && grep -qE 'g_ether(\.|,)' "$cmdline"; then
+            # Drop ",g_ether" inside modules-load= and any "g_ether.host_addr=..." token.
+            sed -i -E -e 's/(modules-load=[^ ]*),g_ether/\1/g' \
+                      -e 's/ +g_ether\.host_addr=[^ ]+//g' "$cmdline"
+            log "Stripped g_ether tokens from $cmdline"
+        fi
+    done
+
     # Also load immediately if possible (may fail on first run before reboot)
     modprobe dwc2 2>/dev/null || true
-    modprobe g_ether 2>/dev/null || true
+    modprobe libcomposite 2>/dev/null || true
+}
+
+# ============================================================================
+# Step 1b: Compose the USB gadget via configfs (CDC NCM)
+#
+# We use CDC NCM (not the older ECM) because modern macOS prefers it and it's
+# also natively supported by Linux and Windows 10+. The composed gadget is
+# bound to the UDC post-boot (deferred ~5s) so the Mac's USB-C subsystem has
+# time to be ready, avoiding the boot-time enumeration race that plagues the
+# legacy g_ether path on Pi 5 (no PHY VBUS sense → missed enumerations are
+# silent).
+# ============================================================================
+
+setup_gadget_compose() {
+    hdr "USB Gadget Composition (configfs / CDC NCM)"
+
+    mkdir -p /etc/vasili
+
+    cat > /etc/vasili/usb-gadget-compose.sh <<'COMPOSE_EOF'
+#!/usr/bin/env bash
+# Compose the Vasili USB gadget. Idempotent — safe to re-run.
+set -eu
+
+UDC_NAME="$(ls /sys/class/udc 2>/dev/null | head -1 || true)"
+GADGET_DIR=/sys/kernel/config/usb_gadget/vasili
+
+# Stable MACs. Host side matches the value previously used by g_ether so any
+# host-side rules/leases keyed off it continue to work.
+HOST_MAC="00:11:aa:ff:aa:bb"
+DEV_MAC="02:11:aa:ff:aa:cc"
+
+# Wait for the UDC to appear — modprobe dwc2 may still be racing with us.
+for _ in $(seq 1 40); do
+    UDC_NAME="$(ls /sys/class/udc 2>/dev/null | head -1 || true)"
+    [ -n "$UDC_NAME" ] && break
+    sleep 0.25
+done
+if [ -z "$UDC_NAME" ]; then
+    echo "[gadget] No UDC available — dwc2 not loaded?" >&2
+    exit 1
+fi
+
+modprobe libcomposite 2>/dev/null || true
+
+# Tear down any previous gadget (idempotent compose).
+if [ -d "$GADGET_DIR" ]; then
+    # Unbind UDC first
+    echo "" > "$GADGET_DIR/UDC" 2>/dev/null || true
+    # Remove function symlinks from configs
+    find "$GADGET_DIR/configs" -maxdepth 2 -type l -delete 2>/dev/null || true
+    # Remove config strings then configs
+    find "$GADGET_DIR/configs" -mindepth 2 -maxdepth 2 -type d -name '0x*' \
+        -exec rmdir {} + 2>/dev/null || true
+    find "$GADGET_DIR/configs" -mindepth 2 -maxdepth 2 -type d \
+        -exec rmdir {} + 2>/dev/null || true
+    find "$GADGET_DIR/configs" -mindepth 1 -maxdepth 1 -type d \
+        -exec rmdir {} + 2>/dev/null || true
+    # Remove functions
+    find "$GADGET_DIR/functions" -mindepth 1 -maxdepth 1 -type d \
+        -exec rmdir {} + 2>/dev/null || true
+    # Remove gadget strings then gadget dir
+    find "$GADGET_DIR/strings" -mindepth 1 -maxdepth 1 -type d \
+        -exec rmdir {} + 2>/dev/null || true
+    rmdir "$GADGET_DIR" 2>/dev/null || true
+fi
+
+mkdir -p "$GADGET_DIR"
+cd "$GADGET_DIR"
+
+# Device descriptors. 0x1d6b is the Linux Foundation VID; 0x0104 is the
+# "Multifunction Composite Gadget" PID used by the upstream gadget examples.
+echo 0x1d6b > idVendor
+echo 0x0104 > idProduct
+echo 0x0100 > bcdDevice
+echo 0x0200 > bcdUSB
+
+mkdir -p strings/0x409
+echo "vasili-001"                 > strings/0x409/serialnumber
+echo "Vasili"                     > strings/0x409/manufacturer
+echo "Vasili Mgmt Network (NCM)"  > strings/0x409/product
+
+# CDC NCM function (preferred by macOS Sequoia+, supported by Linux & Win10+).
+mkdir -p functions/ncm.usb0
+echo "$DEV_MAC"  > functions/ncm.usb0/dev_addr
+echo "$HOST_MAC" > functions/ncm.usb0/host_addr
+
+# Single configuration.
+mkdir -p configs/c.1/strings/0x409
+echo "CDC NCM"          > configs/c.1/strings/0x409/configuration
+echo 250                > configs/c.1/MaxPower
+
+ln -s functions/ncm.usb0 configs/c.1/
+
+# Bind to UDC. This is what raises D+ pull-up; the host enumerates here.
+echo "$UDC_NAME" > UDC
+
+echo "[gadget] vasili gadget bound to $UDC_NAME"
+COMPOSE_EOF
+    chmod +x /etc/vasili/usb-gadget-compose.sh
+    log "Wrote /etc/vasili/usb-gadget-compose.sh"
 }
 
 # ============================================================================
@@ -139,19 +265,29 @@ ConfigureWithoutCarrier=yes
 EOF
     log "Wrote systemd-networkd configs for $USB_IFACE and $ETH_IFACE"
 
-    # Systemd service that brings up both interfaces with static IPs.
-    # eth0 gets an address on the same management subnet as usb0 so
-    # a laptop plugged into either port reaches the same Pi.
+    # Systemd service that composes the gadget then brings up static IPs.
+    # The 5s delay sidesteps a Pi 5 race: dwc2 has no PHY VBUS sensing, so if
+    # we bind the UDC before the Mac's USB-C subsystem is enumerating, the
+    # host silently misses us and there's no retry. Five seconds is enough
+    # slack on every Mac we've tested.
+    # eth0 gets an address on the same management subnet as usb0 so a laptop
+    # plugged into either port reaches the same Pi.
     cat > /etc/systemd/system/vasili-usb-gadget.service <<EOF
 [Unit]
-Description=Vasili Management Network (usb0 + eth0)
-After=network-pre.target
+Description=Vasili USB Gadget (compose + management IPs)
+After=network-pre.target systemd-modules-load.service
 Before=vasili.service
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/bin/bash -c ' \
+ExecStartPre=/bin/sleep 5
+ExecStart=/etc/vasili/usb-gadget-compose.sh
+ExecStartPost=/bin/bash -c ' \
+    for _ in \$(seq 1 20); do \
+        ip link show ${USB_IFACE} &>/dev/null && break; \
+        sleep 0.25; \
+    done; \
     if ip link show ${USB_IFACE} &>/dev/null; then \
         ip addr flush dev ${USB_IFACE} 2>/dev/null || true; \
         ip addr add ${MGMT_IP_USB}/24 dev ${USB_IFACE} 2>/dev/null || true; \
@@ -162,6 +298,7 @@ ExecStart=/bin/bash -c ' \
         ip link set ${ETH_IFACE} up; \
     fi'
 ExecStop=/bin/bash -c ' \
+    echo "" > /sys/kernel/config/usb_gadget/vasili/UDC 2>/dev/null || true; \
     ip link set ${USB_IFACE} down 2>/dev/null || true; \
     ip addr del ${MGMT_IP_ETH}/24 dev ${ETH_IFACE} 2>/dev/null || true'
 
@@ -173,14 +310,34 @@ EOF
     systemctl enable vasili-usb-gadget.service
     log "vasili-usb-gadget.service enabled"
 
-    # Bring up now if interfaces exist
+    # Compose the gadget now (clear any legacy g_ether artifacts first).
+    if lsmod | grep -q '^g_ether'; then
+        log "Unloading legacy g_ether so libcomposite can own the UDC"
+        rmmod g_ether 2>/dev/null || warn "rmmod g_ether failed — reboot may be required"
+    fi
+    modprobe libcomposite 2>/dev/null || true
+
+    if [[ -x /etc/vasili/usb-gadget-compose.sh ]] && [[ -d /sys/class/udc ]]; then
+        if /etc/vasili/usb-gadget-compose.sh; then
+            log "Gadget composed and bound to UDC"
+        else
+            warn "Gadget compose failed — will retry at boot"
+        fi
+    fi
+
+    # Wait briefly for usb0 to appear, then assign IPs.
+    for _ in {1..20}; do
+        ip link show "$USB_IFACE" &>/dev/null && break
+        sleep 0.25
+    done
+
     if ip link show "$USB_IFACE" &>/dev/null; then
         ip addr flush dev "$USB_IFACE" 2>/dev/null || true
         ip addr add "${MGMT_IP_USB}/24" dev "$USB_IFACE" 2>/dev/null || true
         ip link set "$USB_IFACE" up 2>/dev/null || true
         log "usb0 is up with IP $MGMT_IP_USB"
     else
-        warn "usb0 not present yet — will activate after reboot"
+        warn "usb0 not present — will activate after reboot"
     fi
 
     if ip link show "$ETH_IFACE" &>/dev/null; then
@@ -214,13 +371,19 @@ interface=${ETH_IFACE}
 bind-interfaces
 dhcp-range=${DHCP_RANGE_START},${DHCP_RANGE_END},${USB_NETMASK},${DHCP_LEASE}
 dhcp-option=option:router,${MGMT_IP_USB}
-dhcp-option=option:dns-server,${MGMT_IP_USB},8.8.8.8
+# Point clients at ourselves for DNS so vasili.local resolves; we forward
+# everything else upstream (see server= below).
+dhcp-option=option:dns-server,${MGMT_IP_USB}
 # Advertise ourselves as the gateway and DNS
 dhcp-authoritative
 # Don't read /etc/resolv.conf — forward to public DNS
 no-resolv
 server=8.8.8.8
 server=1.1.1.1
+# Authoritatively answer vasili.local with our own management IP. mDNS
+# (avahi) covers most clients, but this is the unicast-DNS fallback for
+# anything that respects the dnsmasq-pushed resolver.
+address=/vasili.local/${MGMT_IP_USB}
 EOF
 
     # Systemd service for the USB DHCP instance
@@ -273,6 +436,8 @@ setup_nat() {
 # Called with optional $1 = upstream interface (e.g. wlan0).
 # If no arg, detects the default route interface.
 USB_SUBNET="10.55.0.0/24"
+LOCAL_IFACES=(usb0 eth0)
+UI_PORT=5000
 
 UPSTREAM="${1:-}"
 if [[ -z "$UPSTREAM" ]]; then
@@ -286,16 +451,20 @@ fi
 # Create chains if needed
 iptables -N VASILI-USB-FWD 2>/dev/null || true
 iptables -t nat -N VASILI-USB-NAT 2>/dev/null || true
+iptables -t nat -N VASILI-USB-PRE 2>/dev/null || true
 
 # Flush our chains
 iptables -F VASILI-USB-FWD
 iptables -t nat -F VASILI-USB-NAT
+iptables -t nat -F VASILI-USB-PRE
 
 # Jump into our chains (idempotent)
 iptables -C FORWARD -j VASILI-USB-FWD 2>/dev/null || \
     iptables -I FORWARD -j VASILI-USB-FWD
 iptables -t nat -C POSTROUTING -j VASILI-USB-NAT 2>/dev/null || \
     iptables -t nat -I POSTROUTING -j VASILI-USB-NAT
+iptables -t nat -C PREROUTING -j VASILI-USB-PRE 2>/dev/null || \
+    iptables -t nat -I PREROUTING -j VASILI-USB-PRE
 
 # Masquerade
 iptables -t nat -A VASILI-USB-NAT -s "$USB_SUBNET" -o "$UPSTREAM" -j MASQUERADE
@@ -305,7 +474,15 @@ iptables -A VASILI-USB-FWD -s "$USB_SUBNET" -o "$UPSTREAM" -j ACCEPT
 iptables -A VASILI-USB-FWD -d "$USB_SUBNET" -i "$UPSTREAM" -m state \
     --state RELATED,ESTABLISHED -j ACCEPT
 
-echo "[usb-nat] NAT: $USB_SUBNET -> $UPSTREAM"
+# Redirect tcp/80 -> Vasili UI on local-facing interfaces only, so clients
+# connected via usb0/eth0 can reach http://vasili.local/ without a port.
+# Upstream WiFi is untouched (port 80 stays closed there).
+for IFACE in "${LOCAL_IFACES[@]}"; do
+    iptables -t nat -A VASILI-USB-PRE -i "$IFACE" -p tcp --dport 80 \
+        -j REDIRECT --to-ports "$UI_PORT"
+done
+
+echo "[usb-nat] NAT: $USB_SUBNET -> $UPSTREAM (UI :80 -> :$UI_PORT on ${LOCAL_IFACES[*]})"
 NATEOF
     chmod +x /etc/vasili/usb-gadget-nat.sh
     log "Wrote /etc/vasili/usb-gadget-nat.sh"
@@ -336,6 +513,131 @@ EOF
     else
         log "NAT service enabled — will apply after reboot"
     fi
+}
+
+# ============================================================================
+# Step 4b: UDC watchdog — re-trigger enumeration when the host hasn't bitten
+#
+# The Pi 5's dwc2 has no PHY VBUS sensing, so the kernel can't observe Mac
+# wake/replug. Once the host misses the initial D+ pull-up, the only signal
+# we can send is to cycle the UDC binding. This watchdog does exactly that:
+# checks usb0/carrier every 10s; if it's been 0 for 3 consecutive checks
+# (~30s), unbind/rebind the UDC to force a fresh pull-up the Mac will see.
+# ============================================================================
+
+setup_gadget_watchdog() {
+    hdr "USB Gadget Watchdog"
+
+    cat > /etc/vasili/usb-gadget-watchdog.sh <<'WD_EOF'
+#!/usr/bin/env bash
+# Cycle the UDC binding when the host hasn't enumerated us.
+# Pi 5's dwc2 can't observe VBUS, so this is our only retry mechanism.
+set -u
+
+GADGET_DIR=/sys/kernel/config/usb_gadget/vasili
+USB_IFACE=usb0
+CHECK_INTERVAL=10
+NOT_UP_THRESHOLD=3   # consecutive checks (~30s) before we cycle
+
+down_streak=0
+
+while true; do
+    sleep "$CHECK_INTERVAL"
+
+    # No gadget composed yet? Try to compose it.
+    if [[ ! -d "$GADGET_DIR" ]] || [[ ! -s "$GADGET_DIR/UDC" ]]; then
+        if [[ -x /etc/vasili/usb-gadget-compose.sh ]]; then
+            /etc/vasili/usb-gadget-compose.sh \
+                && logger -t vasili-usb-watchdog "composed gadget"
+        fi
+        down_streak=0
+        continue
+    fi
+
+    carrier=$(cat /sys/class/net/$USB_IFACE/carrier 2>/dev/null || echo 0)
+    udc_state=$(cat /sys/class/udc/*/state 2>/dev/null | head -1)
+
+    if [[ "$carrier" == "1" ]]; then
+        down_streak=0
+        continue
+    fi
+
+    down_streak=$((down_streak + 1))
+    if (( down_streak < NOT_UP_THRESHOLD )); then
+        continue
+    fi
+
+    # Cycle UDC binding. Empty write → unbind; UDC name → re-bind. This is
+    # what the host (Mac) sees as a fresh device attach.
+    udc_name=$(ls /sys/class/udc 2>/dev/null | head -1)
+    if [[ -n "$udc_name" ]]; then
+        echo "" > "$GADGET_DIR/UDC" 2>/dev/null || true
+        sleep 0.5
+        echo "$udc_name" > "$GADGET_DIR/UDC" 2>/dev/null || true
+        logger -t vasili-usb-watchdog \
+            "cycled UDC (carrier=$carrier udc_state=${udc_state:-?})"
+    fi
+    down_streak=0
+done
+WD_EOF
+    chmod +x /etc/vasili/usb-gadget-watchdog.sh
+    log "Wrote /etc/vasili/usb-gadget-watchdog.sh"
+
+    cat > /etc/systemd/system/vasili-usb-watchdog.service <<'EOF'
+[Unit]
+Description=Vasili USB Gadget Watchdog (host-enumeration retry)
+After=vasili-usb-gadget.service
+Requires=vasili-usb-gadget.service
+
+[Service]
+Type=simple
+ExecStart=/etc/vasili/usb-gadget-watchdog.sh
+Restart=on-failure
+RestartSec=5
+# Quiet journald — watchdog is meant to be silent unless it cycles.
+StandardOutput=null
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    systemctl daemon-reload
+    systemctl enable vasili-usb-watchdog.service
+    systemctl restart vasili-usb-watchdog.service 2>/dev/null || \
+        log "Watchdog will start at next boot"
+    log "vasili-usb-watchdog.service enabled"
+}
+
+# ============================================================================
+# Step 5: mDNS — vasili.local resolves on every reasonable client
+# ============================================================================
+
+setup_mdns() {
+    hdr "mDNS (avahi) — vasili.local"
+
+    # Install avahi if needed
+    if ! command -v avahi-daemon &>/dev/null; then
+        apt-get update -qq && apt-get install -y -qq avahi-daemon
+    fi
+
+    # Set hostname to 'vasili' so avahi advertises vasili.local
+    local current_hostname
+    current_hostname=$(hostnamectl --static 2>/dev/null || hostname)
+    if [[ "$current_hostname" != "vasili" ]]; then
+        hostnamectl set-hostname vasili
+        log "Hostname set to 'vasili' (was '$current_hostname')"
+    else
+        log "Hostname already 'vasili'"
+    fi
+
+    # /etc/hosts entry so local lookups (and avahi) agree
+    if ! grep -qE '^[0-9.]+\s+vasili(\s|$)' /etc/hosts; then
+        echo "127.0.1.1 vasili" >> /etc/hosts
+        log "Added vasili to /etc/hosts"
+    fi
+
+    systemctl enable avahi-daemon.service
+    systemctl restart avahi-daemon.service
+    log "avahi-daemon running — vasili.local advertised via mDNS"
 }
 
 # ============================================================================
@@ -378,8 +680,23 @@ show_status() {
     done
 
     echo ""
+    echo -e "${BOLD}Gadget binding:${NC}"
+    local gadget_udc gadget_state
+    gadget_udc=$(cat /sys/kernel/config/usb_gadget/vasili/UDC 2>/dev/null || echo "")
+    gadget_state=$(cat /sys/class/udc/*/state 2>/dev/null | head -1 || echo "unknown")
+    if [[ -n "$gadget_udc" ]]; then
+        if [[ "$gadget_state" == "configured" ]]; then
+            echo -e "  configfs gadget: ${GREEN}BOUND${NC} ($gadget_udc, state=$gadget_state)"
+        else
+            echo -e "  configfs gadget: ${YELLOW}BOUND but host not enumerated${NC} ($gadget_udc, state=$gadget_state)"
+        fi
+    else
+        echo -e "  configfs gadget: ${RED}NOT COMPOSED${NC}"
+    fi
+
+    echo ""
     echo -e "${BOLD}Services:${NC}"
-    for svc in vasili-usb-gadget vasili-usb-dhcp vasili-usb-nat; do
+    for svc in vasili-usb-gadget vasili-usb-watchdog vasili-usb-dhcp vasili-usb-nat; do
         if systemctl is-active --quiet "${svc}.service" 2>/dev/null; then
             echo -e "  $svc: ${GREEN}RUNNING${NC}"
         elif systemctl is-enabled --quiet "${svc}.service" 2>/dev/null; then
@@ -399,8 +716,9 @@ show_status() {
 
     echo ""
     echo -e "${BOLD}Access:${NC}"
-    echo "  Via USB-C: ssh ubuntu@$MGMT_IP_USB  /  http://$MGMT_IP_USB:5000"
-    echo "  Via eth0:  ssh ubuntu@$MGMT_IP_ETH  /  http://$MGMT_IP_ETH:5000"
+    echo "  Friendly: http://vasili.local/   (mDNS + dnsmasq, port 80 redirected to 5000)"
+    echo "  Via USB-C: ssh ubuntu@$MGMT_IP_USB  /  http://$MGMT_IP_USB/"
+    echo "  Via eth0:  ssh ubuntu@$MGMT_IP_ETH  /  http://$MGMT_IP_ETH/"
 }
 
 # ============================================================================
@@ -410,11 +728,16 @@ show_status() {
 remove() {
     hdr "Removing USB Gadget Configuration"
 
-    for svc in vasili-usb-nat vasili-usb-dhcp vasili-usb-gadget; do
+    for svc in vasili-usb-nat vasili-usb-dhcp vasili-usb-watchdog vasili-usb-gadget; do
         systemctl stop "${svc}.service" 2>/dev/null || true
         systemctl disable "${svc}.service" 2>/dev/null || true
         rm -f "/etc/systemd/system/${svc}.service"
     done
+
+    # Unbind UDC and tear down the configfs gadget, if present.
+    if [[ -d /sys/kernel/config/usb_gadget/vasili ]]; then
+        echo "" > /sys/kernel/config/usb_gadget/vasili/UDC 2>/dev/null || true
+    fi
 
     rm -f /etc/dnsmasq.d/vasili-usb-gadget.conf
     rm -f /etc/NetworkManager/conf.d/99-unmanaged-mgmt.conf
@@ -422,6 +745,8 @@ remove() {
     rm -f /etc/systemd/network/50-vasili-usb0.network
     rm -f /etc/systemd/network/50-vasili-eth0.network
     rm -f /etc/vasili/usb-gadget-nat.sh
+    rm -f /etc/vasili/usb-gadget-compose.sh
+    rm -f /etc/vasili/usb-gadget-watchdog.sh
     rm -f /etc/sysctl.d/99-vasili-usb.conf
 
     # Flush NAT chains
@@ -429,6 +754,8 @@ remove() {
     iptables -X VASILI-USB-FWD 2>/dev/null || true
     iptables -t nat -F VASILI-USB-NAT 2>/dev/null || true
     iptables -t nat -X VASILI-USB-NAT 2>/dev/null || true
+    iptables -t nat -F VASILI-USB-PRE 2>/dev/null || true
+    iptables -t nat -X VASILI-USB-PRE 2>/dev/null || true
 
     systemctl daemon-reload
 
@@ -447,9 +774,12 @@ install_all() {
     mkdir -p /etc/vasili
 
     setup_boot_config
+    setup_gadget_compose
     setup_usb_network
     setup_dhcp
     setup_nat
+    setup_gadget_watchdog
+    setup_mdns
 
     hdr "Setup Complete"
 
@@ -465,8 +795,9 @@ install_all() {
     echo "  Plug into USB-C or Ethernet — both are on the same management subnet."
     echo "  Your laptop gets IP ${DHCP_RANGE_START}-${DHCP_RANGE_END} via DHCP."
     echo ""
-    echo "  Via USB-C:  ssh ubuntu@${MGMT_IP_USB}   http://${MGMT_IP_USB}:5000"
-    echo "  Via eth0:   ssh ubuntu@${MGMT_IP_ETH}   http://${MGMT_IP_ETH}:5000"
+    echo "  Friendly:   http://vasili.local/   (mDNS + dnsmasq)"
+    echo "  Via USB-C:  ssh ubuntu@${MGMT_IP_USB}   http://${MGMT_IP_USB}/"
+    echo "  Via eth0:   ssh ubuntu@${MGMT_IP_ETH}   http://${MGMT_IP_ETH}/"
     echo ""
     echo "  If Vasili has an active WiFi connection, your laptop"
     echo "  can route through it (NAT is automatic)."

@@ -184,6 +184,22 @@ class WifiNetwork:
     uncloaked: bool = False  # True if SSID was resolved from a hidden network
 
 
+def network_group_key(network: 'WifiNetwork', group_by_ssid: bool = True) -> str:
+    """Return the logical grouping key for a network.
+
+    When ``group_by_ssid`` is True (the default) and the network has a
+    non-empty SSID, every access point broadcasting that SSID shares a key
+    (``ssid``) and is treated as one logical network for enabling actions and
+    for pass/fail dedup. Otherwise the key is per access point
+    (``"ssid|bssid"``).
+    """
+    ssid = getattr(network, 'ssid', '') or ''
+    if group_by_ssid and ssid:
+        return ssid
+    bssid = getattr(network, 'bssid', '') or ''
+    return f'{ssid}|{bssid}'
+
+
 @dataclass
 class ConnectionResult:
     network: WifiNetwork
@@ -606,7 +622,9 @@ class DnsmasqDHCP:
     def __init__(self, interface: str, dhcp_range: tuple,
                  subnet_mask: str = '255.255.255.0',
                  router: Optional[str] = None,
-                 dns: str = '8.8.8.8'):
+                 dns: Optional[str] = None,
+                 local_hostname: str = 'vasili.local',
+                 upstream_dns: tuple = ('8.8.8.8', '1.1.1.1')):
         self.interface = interface
         self.dhcp_range = dhcp_range
         self.subnet_mask = subnet_mask
@@ -615,7 +633,11 @@ class DnsmasqDHCP:
             if len(octets) == 4:
                 router = '.'.join(octets[:3] + ['1'])
         self.router = router
-        self.dns = dns
+        # Clients are pointed at the router IP for DNS so our dnsmasq can
+        # answer vasili.local; everything else is forwarded upstream.
+        self.dns = dns if dns is not None else self.router
+        self.local_hostname = local_hostname
+        self.upstream_dns = tuple(upstream_dns)
         self._process: Optional[subprocess.Popen] = None
         self._pid_file = f'/tmp/vasili-dnsmasq-{interface}.pid'
         self._lease_file = f'/tmp/vasili-dnsmasq-{interface}.leases'
@@ -630,12 +652,18 @@ class DnsmasqDHCP:
             '--bind-interfaces',
             f'--interface={self.interface}',
             '--except-interface=lo',
-            '--port=0',
+            # DNS on this interface only (bind-interfaces above scopes it).
+            # Forward everything except vasili.local upstream.
+            '--no-resolv',
             f'--dhcp-range={self.dhcp_range[0]},{self.dhcp_range[1]},'
             f'{self.subnet_mask},12h',
             f'--dhcp-leasefile={self._lease_file}',
             f'--pid-file={self._pid_file}',
         ]
+        if self.local_hostname and self.router:
+            cmd.append(f'--address=/{self.local_hostname}/{self.router}')
+        for upstream in self.upstream_dns:
+            cmd.append(f'--server={upstream}')
         if self.router:
             cmd.append(f'--dhcp-option=3,{self.router}')
         if self.dns:
@@ -1097,6 +1125,7 @@ class HostAP:
             for cmd in [
                 ['iptables', '-N', 'VASILI-HOSTAP-FWD'],
                 ['iptables', '-t', 'nat', '-N', 'VASILI-HOSTAP-NAT'],
+                ['iptables', '-t', 'nat', '-N', 'VASILI-HOSTAP-PRE'],
             ]:
                 result = subprocess.run(cmd, capture_output=True, text=True)
                 if result.returncode != 0 and 'already exists' not in result.stderr.lower():
@@ -1105,16 +1134,28 @@ class HostAP:
             # Flush chains
             subprocess.run(['iptables', '-F', 'VASILI-HOSTAP-FWD'], capture_output=True)
             subprocess.run(['iptables', '-t', 'nat', '-F', 'VASILI-HOSTAP-NAT'], capture_output=True)
+            subprocess.run(['iptables', '-t', 'nat', '-F', 'VASILI-HOSTAP-PRE'], capture_output=True)
 
             # Jump into hostap chains from main chains (idempotent)
             for jump_cmd in [
                 ['iptables', '-C', 'FORWARD', '-j', 'VASILI-HOSTAP-FWD'],
                 ['iptables', '-t', 'nat', '-C', 'POSTROUTING', '-j', 'VASILI-HOSTAP-NAT'],
+                ['iptables', '-t', 'nat', '-C', 'PREROUTING', '-j', 'VASILI-HOSTAP-PRE'],
             ]:
                 result = subprocess.run(jump_cmd, capture_output=True, text=True)
                 if result.returncode != 0:
                     add_cmd = [jump_cmd[0]] + ['-A' if c == '-C' else c for c in jump_cmd[1:]]
                     subprocess.run(add_cmd, capture_output=True)
+
+            # Redirect tcp/80 on the AP iface to Vasili's web UI on tcp/5000
+            # so clients can reach http://vasili.local/ without a port.
+            result = subprocess.run([
+                'iptables', '-t', 'nat', '-A', 'VASILI-HOSTAP-PRE',
+                '-i', self.interface, '-p', 'tcp', '--dport', '80',
+                '-j', 'REDIRECT', '--to-ports', '5000',
+            ], capture_output=True, text=True)
+            if result.returncode != 0:
+                logger.warning(f'HostAP port 80 redirect failed: {result.stderr.strip()}')
 
             # Masquerade AP traffic going out upstream
             result = subprocess.run([
@@ -1159,6 +1200,7 @@ class HostAP:
         """Flush hostap iptables chains."""
         subprocess.run(['iptables', '-F', 'VASILI-HOSTAP-FWD'], capture_output=True)
         subprocess.run(['iptables', '-t', 'nat', '-F', 'VASILI-HOSTAP-NAT'], capture_output=True)
+        subprocess.run(['iptables', '-t', 'nat', '-F', 'VASILI-HOSTAP-PRE'], capture_output=True)
         self._upstream_interface = None
 
     def update_upstream(self, new_upstream: str):
@@ -3108,7 +3150,13 @@ class PipelineModule(ConnectionModule):
         if self.consent_manager:
             bssid = network.bssid if network else None
             ssid = network.ssid if network else None
-            return self.consent_manager.has_consent(stage_name, bssid=bssid, ssid=ssid)
+            group_by_ssid = getattr(
+                self.consent_manager, 'group_by_ssid', True
+            )
+            return self.consent_manager.has_consent(
+                stage_name, bssid=bssid, ssid=ssid,
+                group_by_ssid=group_by_ssid,
+            )
         return False
 
     def _get_connect_context(self) -> dict:
@@ -3316,6 +3364,7 @@ class PipelineModule(ConnectionModule):
                 )
 
         context: dict = self._get_connect_context()
+        context['card_manager'] = self.card_manager
         if self.auto_connect:
             context['wifi_associated'] = True
         successful_stage = None
@@ -3456,6 +3505,13 @@ class WifiManager:
 
         self.modules = self._load_connection_modules()
         self.disabled_modules: set[str] = self._load_disabled_modules()
+        # Network grouping: when True, all APs broadcasting the same SSID are
+        # treated as one logical network for enabling actions and pass/fail.
+        self.group_networks_by_ssid: bool = self._load_group_by_ssid()
+        # Make the flag reachable from the consent path (PipelineModule._has_consent
+        # reads it off the shared consent_manager rather than importing globals).
+        if self.consent_manager is not None:
+            self.consent_manager.group_by_ssid = self.group_networks_by_ssid
 
         # Speedtest is a post-connection action, not a connection module:
         # it runs after a module connects and is bound to that module's
@@ -3751,6 +3807,50 @@ class WifiManager:
 
     def is_module_enabled(self, module_name: str) -> bool:
         return module_name not in self.disabled_modules
+
+    def _load_group_by_ssid(self) -> bool:
+        """Load the network-grouping setting from MongoDB (default True)."""
+        try:
+            config = get_config()
+            client = MongoClient(
+                config.database.mongodb_uri, serverSelectionTimeoutMS=2000
+            )
+            db = client[config.database.db_name]
+            doc = db['module_state'].find_one({'_id': 'network_grouping'})
+            if doc and 'group_by_ssid' in doc:
+                return bool(doc['group_by_ssid'])
+        except Exception:
+            pass
+        return True
+
+    def _save_group_by_ssid(self):
+        """Persist the network-grouping setting to MongoDB."""
+        try:
+            config = get_config()
+            client = MongoClient(
+                config.database.mongodb_uri, serverSelectionTimeoutMS=2000
+            )
+            db = client[config.database.db_name]
+            db['module_state'].update_one(
+                {'_id': 'network_grouping'},
+                {'$set': {'group_by_ssid': bool(self.group_networks_by_ssid)}},
+                upsert=True,
+            )
+        except Exception as e:
+            logger.error(f'Failed to save network grouping setting: {e}')
+
+    def get_group_by_ssid(self) -> bool:
+        """Return whether networks are grouped by SSID."""
+        return self.group_networks_by_ssid
+
+    def set_group_by_ssid(self, value: bool) -> bool:
+        """Enable or disable SSID-based network grouping. Returns True."""
+        self.group_networks_by_ssid = bool(value)
+        # Keep the consent path's view of the flag in sync.
+        if self.consent_manager is not None:
+            self.consent_manager.group_by_ssid = self.group_networks_by_ssid
+        self._save_group_by_ssid()
+        return True
 
     def use_connection(self, connection_index: int) -> bool:
         if connection_index >= len(self.suitable_connections):
@@ -4526,10 +4626,15 @@ class WifiManager:
                                        result: ConnectionResult):
         """Process a successful connection result (thread-safe)."""
         with self._connections_lock:
-            # Parallel workers can both succeed on the same SSID via
-            # different BSSIDs; only the first one keeps its card.
+            # Parallel workers can both succeed on the same logical network;
+            # only the first one keeps its card. With SSID grouping on, all
+            # BSSIDs of an SSID collapse to one key; with grouping off, dedup
+            # is per (SSID, BSSID).
+            group_by_ssid = self.group_networks_by_ssid
+            result_key = network_group_key(result.network, group_by_ssid)
             duplicate = any(
-                c.connected and c.network.ssid == result.network.ssid
+                c.connected
+                and network_group_key(c.network, group_by_ssid) == result_key
                 for c in self.suitable_connections
             ) if result.network.ssid else False
             if not duplicate:
@@ -4644,14 +4749,19 @@ class WifiManager:
 
                 # Build work queue: (network, module) pairs to test
                 work_items = []
+                group_by_ssid = self.group_networks_by_ssid
                 connected_bssids = set()
-                connected_ssids = set()
+                # Grouping keys already connected: SSID-scoped when grouping is
+                # on, (SSID,BSSID)-scoped when off.
+                connected_keys = set()
                 with self._connections_lock:
                     for conn in self.suitable_connections:
                         if conn.connected:
                             connected_bssids.add(conn.network.bssid)
                             if conn.network.ssid:
-                                connected_ssids.add(conn.network.ssid)
+                                connected_keys.add(
+                                    network_group_key(conn.network, group_by_ssid)
+                                )
 
                 # Don't schedule connect attempts to our own HostAP SSID —
                 # the scanner will see it on the air just like any other
@@ -4663,17 +4773,20 @@ class WifiManager:
                     else None
                 )
 
-                # In-flight SSIDs queued so far this cycle — prevents two
-                # BSSIDs of the same SSID being submitted to parallel workers.
-                queued_ssids: set[str] = set()
+                # In-flight grouping keys queued so far this cycle — prevents
+                # two members of the same logical network being submitted to
+                # parallel workers. SSID-scoped when grouping is on, otherwise
+                # per (SSID, BSSID).
+                queued_keys: set[str] = set()
                 for network in networks:
                     if network.bssid in connected_bssids:
                         continue
                     if hostap_ssid and network.ssid == hostap_ssid:
                         continue
+                    net_key = network_group_key(network, group_by_ssid)
                     if network.ssid and (
-                        network.ssid in connected_ssids
-                        or network.ssid in queued_ssids
+                        net_key in connected_keys
+                        or net_key in queued_keys
                     ):
                         continue
                     for module in self.modules:
@@ -4688,7 +4801,7 @@ class WifiManager:
                         if module.can_connect(network):
                             work_items.append((network, module))
                             if network.ssid:
-                                queued_ssids.add(network.ssid)
+                                queued_keys.add(net_key)
                             break  # First matching module per network
 
                 if not work_items:
@@ -5250,10 +5363,15 @@ def approve_ssid_consent(name):
     bssid = data['bssid']
     ssid = data.get('ssid', '')
 
+    group_by_ssid = wifi_manager.get_group_by_ssid()
     if data.get('approved', True):
-        success = wifi_manager.consent_manager.approve_ssid(name, bssid, ssid)
+        success = wifi_manager.consent_manager.approve_ssid(
+            name, bssid, ssid, group_by_ssid=group_by_ssid,
+        )
     else:
-        success = wifi_manager.consent_manager.revoke_ssid(name, bssid)
+        success = wifi_manager.consent_manager.revoke_ssid(
+            name, bssid, ssid=ssid, group_by_ssid=group_by_ssid,
+        )
 
     return jsonify({'success': success})
 
@@ -5267,6 +5385,25 @@ def get_approved_ssids(name):
 @app.route('/api/modules/consent')
 def get_all_consent():
     return jsonify(wifi_manager.consent_manager.get_all())
+
+
+@app.route('/api/config/network-grouping', methods=['GET'])
+def get_network_grouping():
+    """Return whether networks are grouped by SSID."""
+    return jsonify({'group_by_ssid': wifi_manager.get_group_by_ssid()})
+
+
+@app.route('/api/config/network-grouping', methods=['PUT'])
+def set_network_grouping():
+    """Enable or disable SSID-based network grouping."""
+    data = request.get_json()
+    if data is None or 'group_by_ssid' not in data:
+        return jsonify({'error': 'group_by_ssid field required'}), 400
+    wifi_manager.set_group_by_ssid(bool(data['group_by_ssid']))
+    return jsonify({
+        'success': True,
+        'group_by_ssid': wifi_manager.get_group_by_ssid(),
+    })
 
 
 @app.route('/api/hostap/status')

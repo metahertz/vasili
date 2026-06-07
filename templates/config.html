@@ -191,6 +191,11 @@
         </div>
 
         <div class="section">
+            <h2>Network Grouping</h2>
+            <div id="network-grouping-section"><div style="color:#484f58;text-align:center;padding:20px">Loading...</div></div>
+        </div>
+
+        <div class="section">
             <h2>Wired Ethernet</h2>
             <div id="ethernet-section"><div style="color:#484f58;text-align:center;padding:20px">Loading...</div></div>
         </div>
@@ -951,6 +956,40 @@
             });
         }
 
+        // ----- Network Grouping -----
+        function loadNetworkGrouping() {
+            fetch('/api/config/network-grouping').then(r => r.json()).then(s => {
+                const section = el('network-grouping-section');
+                const on = !!s.group_by_ssid;
+                section.innerHTML = `
+                    <div class="toggle-row" style="border:none">
+                        <div class="toggle-label">
+                            <div class="name">Group access points by SSID</div>
+                            <div class="desc">Treat all access points broadcasting the same SSID as one network (for enabling actions and pass/fail). Uncheck to treat each SSID+BSSID separately.</div>
+                        </div>
+                        <label class="switch">
+                            <input type="checkbox" ${on ? 'checked' : ''} onchange="setNetworkGrouping(this.checked)">
+                            <span class="slider"></span>
+                        </label>
+                    </div>`;
+            });
+        }
+
+        function setNetworkGrouping(groupBySsid) {
+            fetch('/api/config/network-grouping', {
+                method: 'PUT',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({group_by_ssid: groupBySsid}),
+            }).then(r => r.json()).then(d => {
+                if (d.success) {
+                    toast(groupBySsid ? 'Grouping by SSID' : 'Grouping per SSID+BSSID');
+                } else {
+                    toast(d.error || 'Failed');
+                }
+                loadNetworkGrouping();
+            });
+        }
+
         // ----- Ethernet -----
         let ethernetStatus = {};
 
@@ -1121,7 +1160,7 @@
             toast('Parsed — review and save');
         }
 
-        window.addEventListener('load', () => { loadHostAP(); loadAutoBridge(); loadEthernet(); loadModules(); loadKnownNetworks(); });
+        window.addEventListener('load', () => { loadHostAP(); loadAutoBridge(); loadNetworkGrouping(); loadEthernet(); loadModules(); loadKnownNetworks(); });
     </script>
 </body>
 </html>

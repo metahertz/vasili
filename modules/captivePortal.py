@@ -295,11 +295,30 @@ class CaptivePortalAuthenticator:
 
     USER_AGENT = 'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/125.0 Mobile Safari/537.36'
 
-    def __init__(self, identity: dict = None):
+    def __init__(self, identity: dict = None, use_browser: bool = True,
+                 browser_timeout: int = 30):
         self.timeout = 15
         self.max_steps = 5
         self.identity = identity or {}
+        self.use_browser = use_browser
+        self.browser_timeout = browser_timeout
         self.auth_log: list[dict] = []  # Detailed log for UI
+
+    def _check_connectivity(self, interface: str = None) -> Optional[bool]:
+        """Confirm real internet via the bound interface (HTTP 204).
+
+        Returns True/False when an interface is available, or None when no
+        interface is given (caller should fall back to the old heuristic so
+        unit tests without a real interface still work).
+        """
+        if not interface:
+            return None
+        try:
+            import network_isolation
+            return network_isolation.verify_connectivity(interface)
+        except Exception as e:
+            logger.debug(f'Connectivity recheck failed: {e}')
+            return None
 
     def authenticate(self, portal_info: Dict[str, Any],
                      interface: str = None) -> bool:
@@ -308,6 +327,7 @@ class CaptivePortalAuthenticator:
         Tries multiple strategies in order:
         1. Smart form parsing + auto-fill (handles marketing portals)
         2. Simple click-through (handles redirect-only portals)
+        3. Headless-browser fallback (handles JS-only / tickbox portals)
 
         Args:
             portal_info: Portal information from detection
@@ -341,12 +361,44 @@ class CaptivePortalAuthenticator:
         if result:
             return True
 
+        # Strategy 3: Headless-browser fallback (JS-only / tickbox portals)
+        if self.use_browser:
+            result = self._browser_auth(redirect_url, interface)
+            if result:
+                return True
+
         self._log('failed', 'All authentication strategies exhausted')
         return False
 
+    def _browser_auth(self, url: str, interface: str = None) -> bool:
+        """Headless-browser fallback for JS-only / tickbox portals.
+
+        Degrades gracefully: if the browser module or Playwright/Chromium
+        isn't available it logs and returns False so the HTTP path still
+        governs the outcome.
+        """
+        self._log('step', f'Browser fallback: {url}')
+        try:
+            from modules.portal_browser import solve_with_browser
+        except Exception as e:
+            self._log('info', f'Browser fallback unavailable: {str(e)[:120]}')
+            return False
+
+        try:
+            ok = solve_with_browser(url, interface, timeout=self.browser_timeout)
+        except Exception as e:
+            self._log('error', f'Browser fallback error: {str(e)[:200]}')
+            return False
+
+        if ok:
+            self._log('success', 'Browser fallback authenticated (connectivity verified)')
+        else:
+            self._log('info', 'Browser fallback did not achieve connectivity')
+        return ok
+
     def _smart_form_auth(self, url: str, interface: str = None) -> bool:
         """Parse and submit portal forms with intelligent auto-fill."""
-        from portal_forms import parse_and_fill
+        from portal_forms import parse_and_fill, strip_submit_sentinel
 
         session = requests.Session()
         session.headers.update({
@@ -387,9 +439,17 @@ class CaptivePortalAuthenticator:
 
                 if not form_fills:
                     self._log('info', f'No forms found on page (step {step+1})')
-                    # No forms — might be a success page already
+                    # No forms — might be a success page already. Confirm with a
+                    # real connectivity check rather than trusting the heuristic.
                     if step > 0:
-                        return True  # We submitted a form and landed on a no-form page
+                        connected = self._check_connectivity(interface)
+                        if connected is None:
+                            # No interface (unit tests): keep old heuristic.
+                            return True
+                        if connected:
+                            self._log('success', 'Connectivity verified after submit')
+                            return True
+                        self._log('info', 'No more forms but still no connectivity')
                     return False
 
                 # Try each form (best candidate first)
@@ -401,24 +461,26 @@ class CaptivePortalAuthenticator:
                     action_url = form.action or current_url
                     method = form.method
 
+                    # Drop the unnamed-submit sentinel from the wire payload.
+                    post_data = strip_submit_sentinel(filled_data)
+
                     field_summary = ', '.join(
                         f'{k}={"***" if len(v) > 0 else "(empty)"}'
-                        for k, v in filled_data.items()
-                        if k != '__submit__'
+                        for k, v in post_data.items()
                     )
                     self._log(
                         'submit',
-                        f'{method} {action_url} [{len(filled_data)} fields: {field_summary}]'
+                        f'{method} {action_url} [{len(post_data)} fields: {field_summary}]'
                     )
 
                     if method == 'GET':
                         response = session.get(
-                            action_url, params=filled_data,
+                            action_url, params=post_data,
                             timeout=self.timeout, allow_redirects=True,
                         )
                     else:
                         response = session.post(
-                            action_url, data=filled_data,
+                            action_url, data=post_data,
                             timeout=self.timeout, allow_redirects=True,
                             headers={'Referer': current_url},
                         )
@@ -431,9 +493,20 @@ class CaptivePortalAuthenticator:
                         self._log('info', f'Response contains form — continuing to step {step+2}')
                         break  # Continue outer loop with new page
 
-                    # No more forms — assume we're done
-                    self._log('success', f'Form submitted, no more forms on response page')
-                    return True
+                    # No more forms. Confirm success with a real connectivity
+                    # recheck rather than trusting the absence of <form>.
+                    connected = self._check_connectivity(interface)
+                    if connected is None:
+                        # No interface (unit tests): keep old heuristic.
+                        self._log('success', 'Form submitted, no more forms on response page')
+                        return True
+                    if connected:
+                        self._log('success', 'Form submitted, connectivity verified')
+                        return True
+                    self._log('info', 'Form submitted but no connectivity yet')
+                    # Stop trying further forms on this page; loop may continue
+                    # if another page is presented, otherwise we fail out.
+                    break
 
                 if not submitted:
                     break
@@ -456,8 +529,17 @@ class CaptivePortalAuthenticator:
             }
             response = requests.get(url, **kwargs)
             if response.status_code == 200:
-                self._log('success', 'Click-through returned 200')
-                return True
+                # Loading the portal page returns 200 too, so a 200 alone is a
+                # false positive. Confirm with a real connectivity recheck.
+                connected = self._check_connectivity(interface)
+                if connected is None:
+                    # No interface (unit tests): keep old heuristic.
+                    self._log('success', 'Click-through returned 200')
+                    return True
+                if connected:
+                    self._log('success', 'Click-through connectivity verified')
+                    return True
+                self._log('info', 'Click-through 200 but no connectivity')
         except Exception as e:
             self._log('error', f'Click-through error: {e}')
         return False

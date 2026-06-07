@@ -119,6 +119,63 @@ class TestSSIDConsent:
         assert len(result) == 1
         assert result[0]['ssid'] == 'TestNet'
 
+    def test_grouping_on_approve_by_ssid_key(self, manager):
+        # When grouping is on and an SSID is supplied, approval is stored at
+        # SSID scope (ssid_key), not per-BSSID.
+        manager.ssid_collection.update_one.return_value = MagicMock()
+        assert manager.approve_ssid(
+            'mac_clone', 'AA:BB:CC:DD:EE:FF', 'TestNet', group_by_ssid=True
+        ) is True
+        query = manager.ssid_collection.update_one.call_args[0][0]
+        assert query == {'module': 'mac_clone', 'ssid_key': 'TestNet'}
+
+    def test_grouping_on_consent_carries_across_bssids(self, manager):
+        # SSID-scoped approval exists for TestNet (stored via BSSID-A).
+        manager.collection.find_one.return_value = {
+            'module': 'test', 'mode': 'by_ssid'
+        }
+
+        def ssid_find_one(query):
+            if query.get('ssid_key') == 'TestNet':
+                return {'module': 'test', 'ssid_key': 'TestNet',
+                        'approved': True}
+            return None
+        manager.ssid_collection.find_one.side_effect = ssid_find_one
+
+        # BSSID-A (the one that was approved) is honored...
+        assert manager.has_consent(
+            'test', bssid='AA:AA:AA:AA:AA:AA', ssid='TestNet',
+            group_by_ssid=True,
+        ) is True
+        # ...and so is a different BSSID-B broadcasting the same SSID.
+        assert manager.has_consent(
+            'test', bssid='BB:BB:BB:BB:BB:BB', ssid='TestNet',
+            group_by_ssid=True,
+        ) is True
+
+    def test_grouping_off_consent_does_not_carry_across_bssids(self, manager):
+        manager.collection.find_one.return_value = {
+            'module': 'test', 'mode': 'by_ssid'
+        }
+
+        # Only BSSID-A is approved (per-BSSID scope).
+        def ssid_find_one(query):
+            if query.get('bssid') == 'aa:aa:aa:aa:aa:aa':
+                return {'module': 'test', 'bssid': 'aa:aa:aa:aa:aa:aa',
+                        'approved': True}
+            return None
+        manager.ssid_collection.find_one.side_effect = ssid_find_one
+
+        # BSSID-A honored, BSSID-B (same SSID) is NOT.
+        assert manager.has_consent(
+            'test', bssid='AA:AA:AA:AA:AA:AA', ssid='TestNet',
+            group_by_ssid=False,
+        ) is True
+        assert manager.has_consent(
+            'test', bssid='BB:BB:BB:BB:BB:BB', ssid='TestNet',
+            group_by_ssid=False,
+        ) is False
+
     def test_graceful_degradation(self):
         from pymongo.errors import ConnectionFailure
         with patch('consent.MongoClient') as mock:

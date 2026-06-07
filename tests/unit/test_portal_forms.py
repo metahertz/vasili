@@ -5,7 +5,7 @@ import pytest
 from portal_forms import (
     PortalFormParser, FormField, FormData,
     classify_field, autofill_form, parse_and_fill,
-    DEFAULT_IDENTITY,
+    strip_submit_sentinel, DEFAULT_IDENTITY,
 )
 
 
@@ -77,6 +77,29 @@ PASSWORD_PORTAL = """
   <input type="text" name="username" placeholder="Username">
   <input type="password" name="password" placeholder="Password">
   <input type="submit" value="Login">
+</form>
+"""
+
+# Checkbox + UNNAMED submit button — the button carries no name attribute, so
+# the form's only real field is the terms checkbox.
+CHECKBOX_UNNAMED_SUBMIT = """
+<form action="/accept" method="POST">
+  <input type="checkbox" name="accept_terms" value="1" required> I agree
+  <button type="submit">Connect</button>
+</form>
+"""
+
+# Button-only form — no fields at all besides an unnamed submit button.
+BUTTON_ONLY = """
+<form action="/go" method="POST">
+  <button type="submit">Continue</button>
+</form>
+"""
+
+# Button-only form where the submit button HAS a name.
+NAMED_SUBMIT_ONLY = """
+<form action="/go" method="POST">
+  <input type="submit" name="login" value="Free WiFi">
 </form>
 """
 
@@ -254,6 +277,48 @@ class TestAutoFill:
         filled = autofill_form(forms[0])
 
         assert 'password' not in filled
+
+    def test_checkbox_unnamed_submit(self):
+        """Checkbox + unnamed submit: checkbox must be sent, submit recorded."""
+        parser = PortalFormParser()
+        forms = parser.parse(CHECKBOX_UNNAMED_SUBMIT)
+        filled = autofill_form(forms[0])
+
+        # The terms checkbox must be present and checked.
+        assert filled.get('accept_terms') == '1'
+        # The unnamed submit is recorded via the sentinel so the form isn't
+        # treated as fieldless.
+        assert '__submit__' in filled
+        # The wire payload strips the sentinel but keeps the real checkbox.
+        wire = strip_submit_sentinel(filled)
+        assert wire == {'accept_terms': '1'}
+        assert wire  # non-empty
+
+    def test_button_only_form(self):
+        """Button-only form must not produce an empty payload signal."""
+        parser = PortalFormParser()
+        forms = parser.parse(BUTTON_ONLY)
+        filled = autofill_form(forms[0])
+
+        # The only control is an unnamed submit — recorded via the sentinel.
+        assert '__submit__' in filled
+        # After stripping the sentinel the wire body is empty (nothing else to
+        # send), but autofill did NOT silently drop the submit — the sentinel
+        # carried the signal that a submit exists.
+        wire = strip_submit_sentinel(filled)
+        assert wire == {}
+
+    def test_named_submit_included(self):
+        """A named submit must be sent as name=value in the wire payload."""
+        parser = PortalFormParser()
+        forms = parser.parse(NAMED_SUBMIT_ONLY)
+        filled = autofill_form(forms[0])
+
+        assert filled.get('login') == 'Free WiFi'
+        # Named submit survives sentinel stripping (it's a real field).
+        wire = strip_submit_sentinel(filled)
+        assert wire == {'login': 'Free WiFi'}
+        assert '__submit__' not in wire
 
 
 @pytest.mark.unit

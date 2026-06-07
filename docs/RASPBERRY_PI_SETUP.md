@@ -102,6 +102,23 @@ python3 -m venv venv
 ./venv/bin/pip install -r requirements.txt
 ```
 
+(Optional) Install the captive-portal **headless-browser fallback**
+(Playwright/Chromium) so Vasili can solve JS-only / tickbox / single-button
+portals. This is optional — without it the lightweight HTTP path still runs and
+degrades gracefully. Chromium and its OS deps are arm64-friendly on the Pi:
+
+```bash
+cd /home/ubuntu/vasili
+export PLAYWRIGHT_BROWSERS_PATH="$PWD/.playwright"   # pin cache under the app dir
+./venv/bin/python -m playwright install chromium     # ~150 MB browser download
+sudo env PLAYWRIGHT_BROWSERS_PATH="$PWD/.playwright" \
+    ./venv/bin/python -m playwright install-deps chromium   # apt OS libraries
+```
+
+If the Vasili service runs as root, make sure its unit sets
+`Environment="PLAYWRIGHT_BROWSERS_PATH=.../.playwright"` (the shipped
+`vasili.service` already does, pointing at `/opt/vasili/.playwright`).
+
 ### 3.5 Configure Vasili
 
 ```bash

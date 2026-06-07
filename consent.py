@@ -40,6 +40,12 @@ class ConsentManager:
             self.ssid_collection.create_index(
                 [('module', 1), ('bssid', 1)], unique=True
             )
+            # SSID-scoped consent (used when network grouping is enabled).
+            # Kept as a separate sparse index so per-BSSID and per-SSID
+            # documents can coexist in the same collection.
+            self.ssid_collection.create_index(
+                [('module', 1), ('ssid_key', 1)], unique=True, sparse=True
+            )
             logger.info('ConsentManager connected to MongoDB')
         except (ConnectionFailure, OperationFailure) as e:
             logger.warning(f'MongoDB not available for consent: {e}')
@@ -69,13 +75,17 @@ class ConsentManager:
         return 'on' if val else 'off'
 
     def has_consent(self, module_name: str, bssid: str = None,
-                    ssid: str = None) -> bool:
+                    ssid: str = None, group_by_ssid: bool = False) -> bool:
         """Check if consent is granted for a module, optionally for a specific network.
 
         Args:
             module_name: The stage/module name
             bssid: Network BSSID (used for by_ssid mode)
             ssid: Network SSID (used for by_ssid mode)
+            group_by_ssid: When True, network grouping is enabled and a
+                non-empty SSID is matched/stored at SSID scope (so consent
+                granted for one BSSID applies to every BSSID broadcasting
+                the same SSID). When False, consent is scoped per-BSSID.
         """
         mode = self.get_mode(module_name)
 
@@ -84,6 +94,10 @@ class ConsentManager:
         if mode == 'on':
             return True
         if mode == 'by_ssid':
+            if group_by_ssid and ssid:
+                return self._has_ssid_consent(
+                    module_name, bssid, ssid=ssid, group_by_ssid=True,
+                )
             if not bssid:
                 return False
             return self._has_ssid_consent(module_name, bssid)
@@ -122,13 +136,31 @@ class ConsentManager:
 
     # --- Per-SSID consent ---
 
-    def _has_ssid_consent(self, module_name: str, bssid: str) -> bool:
+    def _has_ssid_consent(self, module_name: str, bssid: str = None,
+                          ssid: str = None,
+                          group_by_ssid: bool = False) -> bool:
         if not self._available:
             return False
         try:
+            if group_by_ssid and ssid:
+                # SSID-scoped: any BSSID broadcasting this SSID counts.
+                doc = self.ssid_collection.find_one({
+                    'module': module_name,
+                    'ssid_key': ssid,
+                })
+                if doc is not None and doc.get('approved', False):
+                    return True
+                # Backward-compat: honour any legacy per-BSSID approval that
+                # carries the same SSID.
+                legacy = self.ssid_collection.find_one({
+                    'module': module_name,
+                    'ssid': ssid,
+                    'approved': True,
+                })
+                return legacy is not None
             doc = self.ssid_collection.find_one({
                 'module': module_name,
-                'bssid': bssid.lower(),
+                'bssid': bssid.lower() if bssid else None,
             })
             return doc is not None and doc.get('approved', False)
         except Exception as e:
@@ -136,11 +168,32 @@ class ConsentManager:
             return False
 
     def approve_ssid(self, module_name: str, bssid: str,
-                     ssid: str = '') -> bool:
-        """Approve a specific network for an offensive module."""
+                     ssid: str = '', group_by_ssid: bool = False) -> bool:
+        """Approve a specific network for an offensive module.
+
+        When ``group_by_ssid`` is True and an SSID is supplied, the approval
+        is stored at SSID scope so it applies to every BSSID broadcasting
+        that SSID. Otherwise it is stored per-BSSID (legacy behaviour).
+        """
         if not self._available:
             return False
         try:
+            if group_by_ssid and ssid:
+                self.ssid_collection.update_one(
+                    {'module': module_name, 'ssid_key': ssid},
+                    {'$set': {
+                        'module': module_name,
+                        'ssid_key': ssid,
+                        'ssid': ssid,
+                        'approved': True,
+                        'approved_at': time.time(),
+                    }},
+                    upsert=True,
+                )
+                logger.info(
+                    f'SSID consent approved (grouped): {module_name} on {ssid}'
+                )
+                return True
             self.ssid_collection.update_one(
                 {'module': module_name, 'bssid': bssid.lower()},
                 {'$set': {
@@ -158,11 +211,18 @@ class ConsentManager:
             logger.error(f'Failed to approve SSID: {e}')
             return False
 
-    def revoke_ssid(self, module_name: str, bssid: str) -> bool:
+    def revoke_ssid(self, module_name: str, bssid: str,
+                    ssid: str = '', group_by_ssid: bool = False) -> bool:
         """Revoke approval for a specific network."""
         if not self._available:
             return False
         try:
+            if group_by_ssid and ssid:
+                self.ssid_collection.delete_one({
+                    'module': module_name,
+                    'ssid_key': ssid,
+                })
+                return True
             self.ssid_collection.delete_one({
                 'module': module_name,
                 'bssid': bssid.lower(),

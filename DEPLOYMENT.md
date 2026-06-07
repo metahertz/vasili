@@ -244,7 +244,19 @@ If you prefer to deploy manually or need to customize the process:
    pip3 install -r requirements.txt
    ```
 
-5. Run vasili:
+5. (Optional) Install the captive-portal headless-browser fallback
+   (Playwright/Chromium). Skippable — vasili degrades gracefully without it,
+   but it's needed to solve JS-only / tickbox / single-button portals:
+   ```bash
+   cd /opt/vasili
+   export PLAYWRIGHT_BROWSERS_PATH=/opt/vasili/.playwright
+   python3 -m playwright install chromium          # browser binary
+   python3 -m playwright install-deps chromium      # OS libs (apt; arm64 ok)
+   ```
+   The bundled `deploy.sh` does this for you. The systemd unit sets
+   `PLAYWRIGHT_BROWSERS_PATH=/opt/vasili/.playwright` so the service finds it.
+
+6. Run vasili:
    ```bash
    python3 /opt/vasili/vasili.py
    ```

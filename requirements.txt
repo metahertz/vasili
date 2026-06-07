@@ -8,6 +8,11 @@ pyyaml
 pyarchops-dnsmasq
 requests
 cryptography
+# Headless-browser captive-portal fallback (JS-only / tickbox portals).
+# After installing, run `playwright install chromium` (plus arm64 system deps
+# on the Pi). The browser path degrades gracefully if Playwright/Chromium are
+# absent — the lightweight HTTP path still governs.
+playwright
 # Optional but recommended on Pi: enables ConnectionMonitor's push-based
 # D-Bus StateChanged path (org.freedesktop.NetworkManager.Device). If
 # unavailable, the monitor transparently falls back to nmcli polling.

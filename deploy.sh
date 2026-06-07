@@ -240,6 +240,22 @@ ssh -p "$REMOTE_PORT" "$REMOTE_USER@$REMOTE_HOST" bash <<ENDSSH
     $REMOTE_DIR/venv/bin/pip install -r $REMOTE_DIR/requirements.txt
 
     echo "[INFO] Python dependencies installed successfully"
+
+    # Playwright Chromium for the captive-portal headless-browser fallback.
+    # Pin the browser cache under the app dir so install-time and the
+    # (root) systemd runtime agree regardless of \$HOME. Browser download
+    # runs as this user; the OS library deps need root (apt).
+    export PLAYWRIGHT_BROWSERS_PATH="$REMOTE_DIR/.playwright"
+    echo "[INFO] Installing Playwright Chromium browser into \$PLAYWRIGHT_BROWSERS_PATH..."
+    $REMOTE_DIR/venv/bin/python -m playwright install chromium
+
+    echo "[INFO] Installing Chromium OS dependencies (apt, via sudo)..."
+    export DEBIAN_FRONTEND=noninteractive
+    $SUDO env PLAYWRIGHT_BROWSERS_PATH="$REMOTE_DIR/.playwright" DEBIAN_FRONTEND=noninteractive \
+        $REMOTE_DIR/venv/bin/python -m playwright install-deps chromium \
+        || echo "[WARN] playwright install-deps failed; browser fallback will degrade gracefully until deps are present"
+
+    echo "[INFO] Playwright Chromium ready (captive-portal browser fallback enabled)"
 ENDSSH
 
 # Install systemd service file

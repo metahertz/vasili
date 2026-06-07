@@ -106,6 +106,15 @@ python3 -m venv venv
 ./venv/bin/pip install -r requirements.txt
 ./venv/bin/python vasili.py     # runs on http://localhost:5000
 ./venv/bin/python -m pytest tests/ -q
+
+# Optional: captive-portal headless-browser fallback (JS-only/tickbox portals).
+# Skippable — the lightweight HTTP path degrades gracefully without it.
+export PLAYWRIGHT_BROWSERS_PATH="$PWD/.playwright"
+./venv/bin/python -m playwright install chromium
+sudo env PLAYWRIGHT_BROWSERS_PATH="$PWD/.playwright" \
+    ./venv/bin/python -m playwright install-deps chromium
 ```
 
 MongoDB is optional — vasili degrades gracefully if it can't reach one.
+The Playwright/Chromium captive-portal fallback is likewise optional; `deploy.sh`
+installs it automatically on the target. See `docs/CAPTIVE_PORTAL.md`.
