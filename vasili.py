@@ -1399,28 +1399,44 @@ def _nm_disable_autoconnect_all_wifi() -> int:
     """
     modified = 0
     try:
+        # Query UUID (never contains ':'), TYPE, and AUTOCONNECT in one shot so
+        # we only touch profiles that actually need changing. On hosts with many
+        # accumulated sandbag profiles, blindly re-modifying every wifi profile
+        # was the dominant startup cost (~0.17s/profile × hundreds = tens of
+        # seconds); filtering to autoconnect=yes collapses that to near-zero.
         r = subprocess.run(
-            ['nmcli', '-t', '-f', 'NAME,TYPE', 'connection', 'show'],
+            ['nmcli', '-t', '-f', 'UUID,TYPE,AUTOCONNECT', 'connection', 'show'],
             capture_output=True, text=True, timeout=5,
         )
         targets: list[str] = []
         for line in r.stdout.splitlines():
             if not line:
                 continue
-            parts = line.rsplit(':', 1)
-            if len(parts) != 2:
+            # UUID/TYPE/AUTOCONNECT are colon-free, so a plain split is safe.
+            parts = line.split(':')
+            if len(parts) < 3:
                 continue
-            name, ctype = parts
-            if ctype == '802-11-wireless':
-                targets.append(name)
-        for name in targets:
-            mr = subprocess.run(
-                ['nmcli', 'connection', 'modify', name,
-                 'connection.autoconnect', 'no'],
-                capture_output=True, text=True, timeout=5,
-            )
-            if mr.returncode == 0:
-                modified += 1
+            uuid, ctype, autoconnect = parts[0], parts[1], parts[2]
+            if ctype == '802-11-wireless' and autoconnect == 'yes':
+                targets.append(uuid)
+
+        # Disable in parallel — independent nmcli calls, so wall-time stays low
+        # even if a batch of profiles still has autoconnect on.
+        def _disable(uuid: str) -> bool:
+            try:
+                mr = subprocess.run(
+                    ['nmcli', 'connection', 'modify', uuid,
+                     'connection.autoconnect', 'no'],
+                    capture_output=True, text=True, timeout=5,
+                )
+                return mr.returncode == 0
+            except Exception:
+                return False
+
+        if targets:
+            from concurrent.futures import ThreadPoolExecutor
+            with ThreadPoolExecutor(max_workers=8) as pool:
+                modified = sum(pool.map(_disable, targets))
     except Exception as e:
         logger.debug(f'_nm_disable_autoconnect_all_wifi: {e}')
     if modified:
@@ -4870,6 +4886,32 @@ db = None
 history_collection = None
 
 
+def app_is_ready() -> bool:
+    """True once _init_app() has constructed the WifiManager.
+
+    The web server starts in its own thread before the (slow) hardware/DB
+    initialization, so routes must tolerate wifi_manager being None for the
+    first moments after a restart.
+    """
+    return wifi_manager is not None
+
+
+@app.before_request
+def _guard_until_ready():
+    """While initializing, answer API calls with 503 'initializing' instead of
+    crashing on a None wifi_manager. Page routes still render their shell so the
+    browser can poll and show a starting-up state."""
+    if app_is_ready():
+        return None
+    path = request.path or ''
+    if path.startswith('/api/'):
+        return jsonify({
+            'status': 'initializing',
+            'message': 'Vasili is starting up — hardware and database are coming online.',
+        }), 503
+    return None
+
+
 def _init_app():
     """Initialize the application — called once from main()."""
     global wifi_manager, mongo_client, db, history_collection
@@ -4932,6 +4974,11 @@ def store_connection_history(
 
 def emit_status_update():
     """Emit current status to all connected clients."""
+    # During startup the WifiManager may still be under construction (it can
+    # trigger an emit, e.g. via auto-selection enable) before the global is
+    # assigned. No-op until it's ready rather than logging a spurious error.
+    if wifi_manager is None:
+        return
     try:
         # Recalculate cards_in_use so the status bar reflects current state
         wifi_manager.status['cards_in_use'] = sum(
@@ -4947,6 +4994,8 @@ def emit_status_update():
 
 def emit_scan_update():
     """Emit current scan results to all connected clients."""
+    if wifi_manager is None:
+        return
     try:
         scan_data = []
         for net in wifi_manager.nearby_networks:
@@ -4974,6 +5023,8 @@ def emit_activity_update(entry: dict):
 
 def emit_connections_update():
     """Emit current connections to all connected clients."""
+    if wifi_manager is None:
+        return
     try:
         connections_data = []
         with wifi_manager._connections_lock:
@@ -5009,6 +5060,15 @@ def emit_connections_update():
 
 @app.route('/')
 def index():
+    # During the brief startup window wifi_manager may not exist yet — render
+    # the shell with safe defaults so the page loads and polls until ready.
+    if not app_is_ready():
+        return render_template(
+            'index.html',
+            status={'initializing': True},
+            connections=[],
+            nearby_networks=[],
+        )
     return render_template(
         'index.html',
         status=wifi_manager.status,
@@ -5618,6 +5678,11 @@ def set_auto_bridge():
 def handle_connect():
     """Handle client connection."""
     logger.info('Client connected to websocket')
+    # The UI may connect before initialization finishes — send a minimal
+    # 'initializing' status and skip the helpers that need wifi_manager.
+    if not app_is_ready():
+        emit('status_update', {'initializing': True})
+        return
     # Send initial status to the newly connected client
     emit('status_update', wifi_manager.status)
     emit_connections_update()
@@ -5838,28 +5903,58 @@ def get_api_docs():
         return jsonify({'error': 'API documentation not found'}), 404
 
 
-def main():
-    # Initialize the app (creates WifiManager, connects to MongoDB)
-    _init_app()
+def _run_web_server():
+    """Serve the Flask/SocketIO UI.
 
+    Runs in its own thread so the interface binds the port and responds
+    immediately on restart, instead of waiting on the slower WiFi-card
+    enumeration, MongoDB connections, and HostAP boot in _init_app(). Until
+    that finishes, wifi_manager is None and the routes report an 'initializing'
+    state (see _guard_until_ready / app_is_ready).
+    """
+    config = get_config()
+    socketio.run(
+        app, host=config.web.host, port=config.web.port,
+        allow_unsafe_werkzeug=True,
+    )
+
+
+def main():
     config = get_config()
     logger.info('Vasili starting with configuration loaded')
 
-    # Start scanning in a separate thread
-    scan_thread = threading.Thread(target=wifi_manager.scan_and_connect)
-    scan_thread.start()
-
-    # Start web interface if enabled
+    # Start the web UI FIRST, in its own thread, so a restart serves the
+    # interface near-instantly. The slow initialization below runs while the
+    # UI is already up; it reports "initializing" until ready.
+    web_thread = None
     if config.web.enabled:
         logger.info(f'Starting web interface on {config.web.host}:{config.web.port}')
-        socketio.run(app, host=config.web.host, port=config.web.port, allow_unsafe_werkzeug=True)
+        web_thread = threading.Thread(
+            target=_run_web_server, name='web-ui', daemon=True,
+        )
+        web_thread.start()
     else:
         logger.info('Web interface disabled, running in headless mode')
-        # Keep the main thread alive
-        try:
+
+    # Heavy initialization (WiFi cards, MongoDB, HostAP) — the slow part of a
+    # restart. Creates the WifiManager and flips the UI from 'initializing'.
+    _init_app()
+    logger.info('Initialization complete — UI fully live')
+
+    # Start scanning in a separate thread
+    scan_thread = threading.Thread(
+        target=wifi_manager.scan_and_connect, name='scan',
+    )
+    scan_thread.start()
+
+    # Keep the main thread alive (and responsive to Ctrl+C).
+    try:
+        if web_thread is not None:
+            web_thread.join()
+        else:
             scan_thread.join()
-        except KeyboardInterrupt:
-            logger.info('Shutting down...')
+    except KeyboardInterrupt:
+        logger.info('Shutting down...')
 
 
 if __name__ == '__main__':
