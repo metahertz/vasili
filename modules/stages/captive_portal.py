@@ -19,7 +19,8 @@ class CaptivePortalStage(PipelineStage):
     name = 'captive_portal'
     requires_consent = False
 
-    # Cached config (populated lazily by _get_stage_config)
+    # Test seam: set directly to force a config and skip the store lookup
+    # in PipelineStage._get_stage_config (None in production).
     _stage_config: dict | None = None
 
     def can_run(self, network, card, context):
@@ -94,16 +95,6 @@ class CaptivePortalStage(PipelineStage):
 
     def _get_identity(self) -> dict:
         return {}
-
-    def _get_stage_config(self) -> dict:
-        """Return merged config (schema defaults + user overrides)."""
-        if self._stage_config is not None:
-            return self._stage_config
-        # Fall back to schema defaults — the PipelineModule config system
-        # will supply overrides at runtime via the module_config store.
-        schema = self.get_config_schema()
-        self._stage_config = {k: v['default'] for k, v in schema.items()}
-        return self._stage_config
 
     def get_config_schema(self):
         return {

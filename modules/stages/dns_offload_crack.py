@@ -162,13 +162,6 @@ class DnsOffloadCrackStage(PipelineStage):
                 message='Server found password but connection failed',
             )
 
-    def _get_stage_config(self) -> dict:
-        if self._stage_config is not None:
-            return self._stage_config
-        schema = self.get_config_schema()
-        self._stage_config = {k: v['default'] for k, v in schema.items()}
-        return self._stage_config
-
     def get_config_schema(self):
         return {
             'offload_domain': {

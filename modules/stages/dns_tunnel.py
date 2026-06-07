@@ -108,16 +108,6 @@ class DnsTunnelStage(PipelineStage):
             message=f'DNS tunnel established via {helper.tunnel_interface}',
         )
 
-    def _get_stage_config(self) -> dict:
-        """Return merged config (schema defaults + user overrides)."""
-        if self._stage_config is not None:
-            return self._stage_config
-        # Fall back to schema defaults — the PipelineModule config system
-        # will supply overrides at runtime via the module_config store.
-        schema = self.get_config_schema()
-        self._stage_config = {k: v['default'] for k, v in schema.items()}
-        return self._stage_config
-
     def get_config_schema(self):
         return {
             'server_domain': {

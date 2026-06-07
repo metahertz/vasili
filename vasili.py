@@ -3144,6 +3144,13 @@ class PipelineStage:
     name: str = 'unnamed'
     requires_consent: bool = False
 
+    # Cached/overridden config. Left None in production so _get_stage_config
+    # reads fresh from the store each call (picks up live edits/imports);
+    # tests set it directly as a seam. Injected store reference set by the
+    # owning PipelineModule.
+    _stage_config: dict | None = None
+    _module_config = None
+
     def can_run(self, network: WifiNetwork, card, context: dict) -> bool:
         """Check if this stage should run given current context."""
         raise NotImplementedError()
@@ -3158,6 +3165,28 @@ class PipelineStage:
         Returns dict of {key: {type, default, description}}.
         """
         return {}
+
+    def _get_stage_config(self) -> dict:
+        """Effective config: schema defaults overlaid with stored overrides.
+
+        Stored overrides live in the ``module_config`` store keyed by the
+        stage's ``name`` (set via the settings UI or the helper-config
+        importer). A directly-set ``_stage_config`` (used by tests) wins and
+        short-circuits the store lookup. Recomputed each call so config edits
+        and helper imports take effect without a restart.
+        """
+        if self._stage_config is not None:
+            return self._stage_config
+        schema = self.get_config_schema()
+        cfg = {k: v.get('default') for k, v in schema.items()}
+        store = getattr(self, '_module_config', None)
+        if store is not None:
+            try:
+                stored = store.get_config(self.name)
+                cfg.update({k: v for k, v in stored.items() if v is not None})
+            except Exception as exc:
+                logger.debug('Stage %s config load failed: %s', self.name, exc)
+        return cfg
 
 
 class PipelineModule(ConnectionModule):
@@ -3205,6 +3234,11 @@ class PipelineModule(ConnectionModule):
 
         # Flat list of all stages for API introspection (/api/modules)
         self.stages = self._flatten_phases(self.phases)
+        # Wire the config store into each stage so user/helper overrides from
+        # the module_config store (keyed by stage name) reach the stage at
+        # runtime. Without this, stages only ever see schema defaults.
+        for stage in self.stages:
+            stage._module_config = module_config
         self.consent_manager = consent_manager
         self.last_stage_log: list[dict] = []
 
@@ -3651,7 +3685,10 @@ class WifiManager:
         self.bandwidth_monitor = BandwidthMonitor()
         self.notification_manager = NotificationManager()
 
-        # Register config schemas from loaded modules
+        # Register config schemas from loaded modules and their pipeline
+        # stages. Stage schemas are keyed by stage name so per-stage config
+        # (set via the UI or the helper-config importer) round-trips through
+        # the same store the stages read at runtime.
         for mod in self.modules:
             schema_method = getattr(mod, 'get_config_schema', None)
             if schema_method:
@@ -3659,6 +3696,10 @@ class WifiManager:
                 if schema:
                     name = getattr(mod, 'name', mod.__class__.__name__)
                     self.module_config.register_schema(name, schema)
+            for stage in getattr(mod, 'stages', []):
+                stage_schema = stage.get_config_schema()
+                if stage_schema:
+                    self.module_config.register_schema(stage.name, stage_schema)
 
         # Activity log for power-user UI — last 100 events
         self.activity_log: collections.deque = collections.deque(maxlen=100)
@@ -5378,6 +5419,7 @@ def get_modules():
                     'name': stage.name,
                     'requires_consent': stage.requires_consent,
                     'config_schema': stage.get_config_schema(),
+                    'config_values': wifi_manager.module_config.get_config(stage.name),
                 })
 
         # Build phase structure: list of items, each is either
@@ -5642,6 +5684,87 @@ def set_network_grouping():
     return jsonify({
         'success': True,
         'group_by_ssid': wifi_manager.get_group_by_ssid(),
+    })
+
+
+# Maps each key the helper's /api/client-config block emits to the pipeline
+# stage that consumes it. Keys not in this map are reported back as unknown.
+HELPER_CONFIG_KEY_STAGE = {
+    'ssh_server': 'dns_port_tunnel',
+    'ssh_user': 'dns_port_tunnel',
+    'ssh_key_path': 'dns_port_tunnel',
+    'wg_config_path': 'dns_port_tunnel',
+    'server_domain': 'dns_tunnel',
+    'tunnel_password': 'dns_tunnel',
+    'tunnel_type': 'dns_tunnel',
+    'offload_domain': 'dns_offload_crack',
+    'offload_secret': 'dns_offload_crack',
+}
+
+
+def parse_helper_config(text: str):
+    """Parse the helper's client-config copy-paste block.
+
+    The block is a list of ``key: value`` lines grouped under ``#`` comment
+    headers (see the helper's ``/api/client-config``). Comment and blank
+    lines are ignored; each setting is split on its first colon and routed
+    to its stage via ``HELPER_CONFIG_KEY_STAGE``.
+
+    Returns ``(by_stage, unknown)`` where ``by_stage`` maps stage name to a
+    ``{key: value}`` dict and ``unknown`` lists unrecognised keys.
+    """
+    by_stage: dict[str, dict] = {}
+    unknown: list[str] = []
+    for raw in (text or '').splitlines():
+        line = raw.strip()
+        if not line or line.startswith('#') or ':' not in line:
+            continue
+        key, _, value = line.partition(':')
+        key = key.strip()
+        value = value.strip()
+        stage = HELPER_CONFIG_KEY_STAGE.get(key)
+        if stage is None:
+            unknown.append(key)
+            continue
+        by_stage.setdefault(stage, {})[key] = value
+    return by_stage, unknown
+
+
+@app.route('/api/helper-import', methods=['POST'])
+def helper_import():
+    """Import a helper client-config block into the relevant stage configs.
+
+    Body: ``{text: "<paste from the helper's Client Config block>"}``.
+    Parses each ``key: value`` line, maps it to its pipeline stage, and
+    persists it so the stages pick it up at runtime. Does not enable modules
+    or grant consent — that stays an explicit operator action.
+    """
+    data = request.get_json(silent=True) or {}
+    text = data.get('text', '')
+    if not isinstance(text, str) or not text.strip():
+        return jsonify({'error': 'No config text provided'}), 400
+
+    by_stage, unknown = parse_helper_config(text)
+    if not by_stage:
+        return jsonify({
+            'error': 'No recognised settings found in the pasted block.',
+            'unknown_keys': sorted(set(unknown)),
+        }), 400
+
+    applied: dict[str, list] = {}
+    failed: list[str] = []
+    for stage, values in by_stage.items():
+        if wifi_manager.module_config.set_config_bulk(stage, values):
+            applied[stage] = sorted(values.keys())
+        else:
+            failed.append(stage)
+
+    return jsonify({
+        'success': not failed,
+        'applied': applied,
+        'failed': sorted(failed),
+        'unknown_keys': sorted(set(unknown)),
+        'store_available': wifi_manager.module_config.is_available(),
     })
 
 

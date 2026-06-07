@@ -223,6 +223,23 @@
         </div>
 
         <div class="section">
+            <h2>Helper Connection Settings</h2>
+            <p style="color:#8b949e;font-size:0.9em;margin-bottom:12px">
+                Paste the <strong>Client Config</strong> block from your vasili-helper UI
+                (the copy-paste box at <code>http://&lt;helper-ip&gt;:8080</code>). Vasili parses it and
+                fills in the DNS-tunnel / SSH / WireGuard / PMKID-crack stage settings for you, so you
+                don't have to type each field by hand into <em>Module &amp; Stage Configuration</em> above.
+                You still need to enable the matching modules and grant consent.
+            </p>
+            <textarea id="helper-import-text" placeholder="# dns_port_tunnel stage (SSH path)&#10;ssh_server: 203.0.113.10&#10;ssh_user: root&#10;ssh_key_path: /etc/vasili/ssh_client_key&#10;&#10;# dns_tunnel stage (iodine)&#10;server_domain: t.example.com&#10;tunnel_password: ...&#10;tunnel_type: iodine"
+                style="width:100%;min-height:140px;padding:10px;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;border-radius:4px;font-family:monospace;font-size:0.85em;box-sizing:border-box;resize:vertical"></textarea>
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:10px;flex-wrap:wrap">
+                <div id="helper-import-result" style="color:#8b949e;font-size:0.85em;flex:1;min-width:160px"></div>
+                <button class="btn" style="background:#238636;border-color:#238636;color:#fff" onclick="importHelperConfig()">Import Settings</button>
+            </div>
+        </div>
+
+        <div class="section">
             <h2>Saved Wi-Fi Credentials</h2>
             <p style="color:#8b949e;font-size:0.9em;margin-bottom:12px">
                 Networks you own or are authorized to use. Vasili tries these credentials first when the matching SSID is in range. Passwords are encrypted on disk with a device-bound key.
@@ -694,19 +711,21 @@
                     items[m.name].pipelines.push(m.name);
                 }
 
-                // Stage-level config (deduplicate by stage name)
+                // Stage-level config (deduplicate by stage name). Stage
+                // config is stored under the stage name with plain keys —
+                // the same key the running stage reads at runtime.
                 (m.stages || []).forEach(s => {
                     const stageSchema = s.config_schema || {};
                     if (!Object.keys(stageSchema).length) return;
                     if (!items[s.name]) {
                         items[s.name] = {
                             name: s.name, label: s.name,
-                            schemas: {}, vals: m.config_values || {},
-                            pipelines: [], saveTarget: m.name,
+                            schemas: {}, vals: s.config_values || {},
+                            pipelines: [], saveTarget: s.name,
                         };
                     }
                     Object.entries(stageSchema).forEach(([k, v]) => {
-                        items[s.name].schemas[s.name + '.' + k] = v;
+                        items[s.name].schemas[k] = v;
                     });
                     if (!items[s.name].pipelines.includes(m.name))
                         items[s.name].pipelines.push(m.name);
@@ -1158,6 +1177,49 @@
             else if (type === 'WPA' || type === 'WPA2') sec.value = 'WPA2';
             else if (type === 'WPA3' || type === 'SAE') sec.value = 'WPA3';
             toast('Parsed — review and save');
+        }
+
+        // ----- Helper Connection Settings import -----
+        function importHelperConfig() {
+            const text = el('helper-import-text').value;
+            const result = el('helper-import-result');
+            if (!text.trim()) { toast('Paste the helper Client Config block first'); return; }
+            result.style.color = '#8b949e';
+            result.textContent = 'Importing…';
+            fetch('/api/helper-import', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({text}),
+            }).then(r => r.json().then(d => ({ok: r.ok, d}))).then(({ok, d}) => {
+                if (!ok || d.error) {
+                    result.style.color = '#f85149';
+                    let msg = d.error || 'Import failed';
+                    if ((d.unknown_keys || []).length) msg += ' (ignored: ' + d.unknown_keys.join(', ') + ')';
+                    result.textContent = msg;
+                    return;
+                }
+                if (!d.store_available) {
+                    result.style.color = '#d29922';
+                    result.textContent = 'Config store unavailable (MongoDB) — nothing saved.';
+                    toast('Store unavailable');
+                    return;
+                }
+                const stages = Object.keys(d.applied || {});
+                const count = stages.reduce((a, s) => a + (d.applied[s] || []).length, 0);
+                if ((d.failed || []).length) {
+                    result.style.color = '#d29922';
+                    result.textContent = 'Saved ' + (stages.join(', ') || 'nothing') + '; failed: ' + d.failed.join(', ');
+                } else {
+                    result.style.color = '#3fb950';
+                    result.textContent = 'Imported ' + count + ' setting(s) into: ' + (stages.join(', ') || '(none)');
+                }
+                if ((d.unknown_keys || []).length) result.textContent += ' · ignored: ' + d.unknown_keys.join(', ');
+                toast('Helper settings imported');
+                loadModules();  // refresh stage-config fields with the new values
+            }).catch(() => {
+                result.style.color = '#f85149';
+                result.textContent = 'Request failed';
+            });
         }
 
         window.addEventListener('load', () => { loadHostAP(); loadAutoBridge(); loadNetworkGrouping(); loadEthernet(); loadModules(); loadKnownNetworks(); });

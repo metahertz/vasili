@@ -61,10 +61,12 @@ ssh root@<pi-ip> 'systemctl start vasili'
 
 Now browse to `http://<pi-ip>:5000` and:
 
-1. Open **Settings** → **Modules** → pick the stages that should hit
-   your helper. Paste each stage's connection details from the helper
-   UI's **Client Config** copy-paste block (it generates the exact
-   YAML fragments you need).
+1. Open **Settings** → **Helper Connection Settings** and paste the
+   helper UI's **Client Config** copy-paste block into the import box,
+   then hit **Import Settings**. Vasili parses it and fills in the
+   DNS-tunnel / SSH / WireGuard / PMKID-crack stage settings for you (no
+   manual field-by-field entry). Then enable the matching stages under
+   **Modules** and grant any consent they require.
 2. **Host Access Point** (settings page) is optional but useful — it
    reserves one of the Pi's WiFi cards as a local AP that NATs through
    whichever upstream vasili picks.
