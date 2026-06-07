@@ -37,6 +37,12 @@ class OpenNetworkPipeline(PipelineModule):
         from modules.macClone import MacCloneStage
 
         phases = [
+            # No pre-gate (credential/association) phases: open networks need
+            # no auth and auto_connect=True associates before any stage runs,
+            # so connectivity_check is first. Captive-portal/tunnel bypasses
+            # stay post-gate — they're only worth running once the gate finds
+            # we're associated but have no internet, and a portal is detected
+            # *by* the connectivity check failing.
             # Phase 1-2: Discovery (sequential)
             ConnectivityCheckStage(),
             DnsProbeStage(),
