@@ -844,6 +844,7 @@ class HostAP:
         self._dhcp_server = None
         self._upstream_interface: Optional[str] = None
         self._ip_configured = False
+        self._nm_unmanaged = False  # True once we set NM 'managed no' on the iface
         self.is_active = False
         # Captured failure reason from the most recent start attempt —
         # surfaced through ``WifiManager._hostap_last_error`` so the UI
@@ -958,13 +959,45 @@ class HostAP:
     # Interface configuration
     # ------------------------------------------------------------------
 
-    def _configure_interface(self) -> bool:
-        """Disconnect from NetworkManager and assign static IP."""
-        # Disconnect any NM-managed connection on this interface
+    def _release_from_nm(self):
+        """Hand the interface fully over to hostapd.
+
+        hostapd's "nl80211: Could not configure driver mode" almost always
+        means NetworkManager (via wpa_supplicant) still controls the radio.
+        `nmcli device disconnect` alone isn't enough — NM keeps the device
+        managed and wpa_supplicant can re-grab it. Setting the device
+        'managed no' makes NM release it entirely so hostapd can switch it to
+        AP mode. Restored to 'managed yes' in _cleanup_interface.
+        """
+        subprocess.run(
+            ['nmcli', 'device', 'set', self.interface, 'managed', 'no'],
+            capture_output=True, text=True,
+        )
+        self._nm_unmanaged = True
         subprocess.run(
             ['nmcli', 'device', 'disconnect', self.interface],
             capture_output=True, text=True,
         )
+
+    def _reset_ap_interface(self):
+        """Re-assert AP-ready interface state between hostapd retries.
+
+        Bounces the link so any half-configured driver state from a failed
+        attempt is cleared before the next one.
+        """
+        self._release_from_nm()
+        subprocess.run(['ip', 'link', 'set', self.interface, 'down'],
+                       capture_output=True)
+        time.sleep(0.3)
+        subprocess.run(['ip', 'link', 'set', self.interface, 'up'],
+                       capture_output=True)
+
+    def _configure_interface(self) -> bool:
+        """Release the interface from NetworkManager and assign static IP."""
+        # Take the radio away from NM/wpa_supplicant before hostapd needs it.
+        self._release_from_nm()
+        # Brief settle so the driver finishes releasing before we reconfigure.
+        time.sleep(0.5)
         # Flush existing addresses
         subprocess.run(
             ['ip', 'addr', 'flush', 'dev', self.interface],
@@ -992,48 +1025,105 @@ class HostAP:
         return True
 
     def _cleanup_interface(self):
-        """Remove the static IP from the AP interface."""
+        """Remove the static IP and hand the interface back to NetworkManager."""
         if self._ip_configured:
             subprocess.run(
                 ['ip', 'addr', 'del', f'{self.AP_IP}/24', 'dev', self.interface],
                 capture_output=True,
             )
             self._ip_configured = False
+        # Re-enable NM management so the card returns to the connection pool
+        # usable again (we set 'managed no' during bring-up).
+        if self._nm_unmanaged:
+            subprocess.run(
+                ['nmcli', 'device', 'set', self.interface, 'managed', 'yes'],
+                capture_output=True, text=True,
+            )
+            self._nm_unmanaged = False
 
     # ------------------------------------------------------------------
     # hostapd process
     # ------------------------------------------------------------------
 
+    # Substrings in hostapd output (and our sub-step errors) that indicate a
+    # transient bring-up race — the radio hadn't finished being released — and
+    # so are worth retrying rather than treating as a permanent failure.
+    _TRANSIENT_HOSTAP_MARKERS = (
+        'could not configure driver mode',
+        'could not set interface',
+        'device or resource busy',
+        'resource temporarily unavailable',
+        'interface initialization failed',
+        'failed to set beacon',
+        "wasn't started",
+        'hostapd exited immediately',
+        'interface setup failed',
+        'dhcp failed',
+    )
+
+    @classmethod
+    def _is_transient_hostapd_error(cls, output: str) -> bool:
+        """True if a start failure looks like a retryable bring-up race."""
+        if not output:
+            return True  # empty/unknown — give it another try
+        low = output.lower()
+        return any(m in low for m in cls._TRANSIENT_HOSTAP_MARKERS)
+
     def _start_hostapd(self) -> bool:
-        """Launch hostapd as a subprocess."""
-        try:
-            self._hostapd_process = subprocess.Popen(
-                ['hostapd', self.CONF_PATH],
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            )
-            # Give hostapd a moment to start
-            time.sleep(2)
-            if self._hostapd_process.poll() is not None:
+        """Launch hostapd, retrying transient driver-mode/busy races.
+
+        "nl80211: Could not configure driver mode" and "Device or resource
+        busy" happen when NetworkManager/wpa_supplicant hasn't fully released
+        the interface yet. A few short retries (re-asserting the interface
+        between them) absorb that settling window instead of failing outright.
+        """
+        attempts = 3
+        for attempt in range(1, attempts + 1):
+            try:
+                self._hostapd_process = subprocess.Popen(
+                    ['hostapd', self.CONF_PATH],
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                )
+                # Give hostapd a moment to start
+                time.sleep(2)
+                if self._hostapd_process.poll() is None:
+                    logger.info(
+                        f'HostAP: hostapd started (pid {self._hostapd_process.pid})'
+                    )
+                    return True
+
+                # Exited immediately — capture diagnostics.
                 stdout, stderr = self._hostapd_process.communicate()
                 # hostapd writes most of its diagnostics to stdout; fall
                 # back to stderr if stdout is empty.
                 msg = (stdout or b'').decode(errors='replace').strip()
                 if not msg:
                     msg = (stderr or b'').decode(errors='replace').strip()
-                self.last_error = self._summarise_hostapd_error(msg) or 'hostapd exited immediately'
-                logger.error(f'HostAP: hostapd exited: {msg[:400]}')
+                self.last_error = (
+                    self._summarise_hostapd_error(msg) or 'hostapd exited immediately'
+                )
                 self._hostapd_process = None
+
+                if attempt < attempts and self._is_transient_hostapd_error(msg):
+                    logger.warning(
+                        'HostAP: hostapd transient failure '
+                        f'(attempt {attempt}/{attempts}): {msg[:200]} — retrying'
+                    )
+                    self._reset_ap_interface()
+                    time.sleep(1.5)
+                    continue
+
+                logger.error(f'HostAP: hostapd exited: {msg[:400]}')
                 return False
-            logger.info(f'HostAP: hostapd started (pid {self._hostapd_process.pid})')
-            return True
-        except FileNotFoundError:
-            self.last_error = 'hostapd binary not found'
-            logger.error('HostAP: hostapd binary not found in PATH')
-            return False
-        except Exception as e:
-            self.last_error = f'failed to launch hostapd: {e}'
-            logger.error(f'HostAP: failed to start hostapd: {e}')
-            return False
+            except FileNotFoundError:
+                self.last_error = 'hostapd binary not found'
+                logger.error('HostAP: hostapd binary not found in PATH')
+                return False
+            except Exception as e:
+                self.last_error = f'failed to launch hostapd: {e}'
+                logger.error(f'HostAP: failed to start hostapd: {e}')
+                return False
+        return False
 
     @staticmethod
     def _summarise_hostapd_error(output: str) -> Optional[str]:
@@ -1230,6 +1320,9 @@ class HostAP:
         self._write_hostapd_conf()
 
         if not self._configure_interface():
+            # _configure_interface already set NM 'managed no'; restore it so
+            # the card is usable again when returned to the connection pool.
+            self._cleanup_interface()
             return False
 
         if not self._start_hostapd():
@@ -3591,8 +3684,12 @@ class WifiManager:
         self.hostap: Optional[HostAP] = None
         self._hostap_lazy_pending = False  # True when AP is confirmed but waiting for card
         self._hostap_claiming = False  # Re-entrancy guard for card-returned callback
-        # Last permanent failure reason — shown in /api/hostap/status so
-        # the UI can explain why auto-start is off.
+        # Serialize start attempts so a background retry and a card-return
+        # callback can't both try to bring the AP up at once.
+        self._hostap_start_lock = threading.Lock()
+        self._hostap_retry_thread: Optional[threading.Thread] = None
+        # Last failure reason — shown in /api/hostap/status so the UI can
+        # explain failures (and whether auto-start is still retrying).
         self._hostap_last_error: Optional[str] = None
 
         # Ethernet mode: 'management' (default — static IP, DHCP, NAT)
@@ -3956,14 +4053,29 @@ class WifiManager:
     # ------------------------------------------------------------------
 
     def start_hostap(self, conf: dict) -> dict:
-        """Start the host access point.
+        """Start the host access point (serialized).
 
         Returns ``{'success': bool, 'error': str, 'permanent': bool}``.
-        A ``permanent`` error (missing hostapd, no AP-capable card)
-        means there is no point retrying — callers must NOT set
-        ``_hostap_lazy_pending`` on these, otherwise the card-return
-        callback will grab and release every freed card forever.
+        A ``permanent`` error (missing hostapd, no AP-capable card) means
+        there is no point retrying — callers must NOT set
+        ``_hostap_lazy_pending`` on these. Transient errors (driver-mode /
+        resource-busy races, DHCP/interface settling) return
+        ``permanent: False`` so "Always Start" stays armed and the AP is
+        retried.
+
+        A non-blocking lock serializes attempts so a background retry and a
+        card-return callback can't try to bring the AP up at the same time.
         """
+        if not self._hostap_start_lock.acquire(blocking=False):
+            return {'success': False,
+                    'error': 'HostAP start already in progress',
+                    'permanent': False}
+        try:
+            return self._do_start_hostap(conf)
+        finally:
+            self._hostap_start_lock.release()
+
+    def _do_start_hostap(self, conf: dict) -> dict:
         if self.hostap and self.hostap.is_active:
             return {'success': False, 'error': 'HostAP already running',
                     'permanent': False}
@@ -4039,7 +4151,12 @@ class WifiManager:
             self.hostap = None
             err = detail or 'HostAP failed to start'
             self._hostap_last_error = err
-            return {'success': False, 'error': err, 'permanent': True}
+            # A bring-up race ("Could not configure driver mode", resource
+            # busy, DHCP/interface settling) is retryable — keep it
+            # non-permanent so "Always Start" persists and we retry, rather
+            # than disabling auto-start on a transient hiccup.
+            transient = HostAP._is_transient_hostapd_error(err)
+            return {'success': False, 'error': err, 'permanent': not transient}
 
     def stop_hostap(self) -> dict:
         if not self.hostap or not self.hostap.is_active:
@@ -4178,14 +4295,17 @@ class WifiManager:
             return {'success': False, 'state': 'unsupported',
                     'error': result.get('error', 'HostAP unavailable')}
 
-        # Transient failure (card busy elsewhere) — queue lazy start
+        # Transient failure (card busy elsewhere, or a bring-up race) — queue
+        # lazy start AND kick off a bounded background retry so a free-card
+        # race (no card-return event) still gets retried.
         self._hostap_lazy_pending = True
+        self._start_hostap_retry_loop()
         logger.info(
-            'HostAP confirmed but card unavailable — will start lazily '
-            'when %s is free', conf.get('interface', 'any card')
+            'HostAP confirmed but start failed transiently — retrying; will '
+            'also start lazily when %s is free', conf.get('interface', 'any card')
         )
         return {'success': True, 'state': 'pending',
-                'message': 'AP will start when the card becomes available'}
+                'message': 'AP will start shortly (retrying) or when the card is free'}
 
     def disable_hostap_lazy(self) -> dict:
         """Disable lazy/auto hostap. Stops AP if running and clears enabled flag."""
@@ -4200,6 +4320,52 @@ class WifiManager:
 
         logger.info('HostAP lazy/auto disabled')
         return {'success': True}
+
+    def _start_hostap_retry_loop(self):
+        """Bounded background retry for transient HostAP start failures.
+
+        When the AP card is already free (boot, or an immediate confirm) a
+        transient hostapd race produces no card-return event, so the lazy
+        card-return path alone would never retry. This re-attempts with
+        backoff, then leaves ``_hostap_lazy_pending`` armed so a later organic
+        card-return still tries. Guarded so only one loop runs at a time.
+        """
+        existing = self._hostap_retry_thread
+        if existing is not None and existing.is_alive():
+            return
+
+        def _worker():
+            for delay in (2, 3, 5, 8, 13):
+                time.sleep(delay)
+                if self.hostap and self.hostap.is_active:
+                    return
+                if not self._hostap_lazy_pending:
+                    return  # cleared elsewhere (disabled, or started already)
+                saved = self._load_hostap_config()
+                if not saved or not saved.get('enabled'):
+                    return
+                logger.info('HostAP background retry (after %ss)...', delay)
+                result = self.start_hostap(saved)
+                if result.get('success'):
+                    self._hostap_lazy_pending = False
+                    logger.info('HostAP background retry succeeded')
+                    return
+                if result.get('permanent'):
+                    self._hostap_lazy_pending = False
+                    self._save_hostap_config({'enabled': False})
+                    logger.warning(
+                        'HostAP background retry hit permanent failure: %s',
+                        result.get('error'),
+                    )
+                    return
+            logger.info(
+                'HostAP background retry exhausted — staying armed; will '
+                'retry on next card free / reboot'
+            )
+
+        t = threading.Thread(target=_worker, name='hostap-retry', daemon=True)
+        self._hostap_retry_thread = t
+        t.start()
 
     def _on_card_returned_for_hostap(self, card: WifiCard):
         """Card-return callback: try to claim the card for lazy hostap.
@@ -4277,11 +4443,21 @@ class WifiManager:
             self._hostap_claiming = False
 
     def _boot_hostap_check(self):
-        """Called once at startup to auto-start AP from saved config."""
+        """Called once at startup to auto-start AP from saved config.
+
+        Runs the actual bring-up in a daemon thread so a transiently-failing
+        AP (with internal hostapd retries) never delays startup or scanning.
+        """
         saved = self._load_hostap_config()
         if not saved or not saved.get('enabled'):
             return
 
+        threading.Thread(
+            target=self._do_boot_hostap_check, args=(saved,),
+            name='hostap-boot', daemon=True,
+        ).start()
+
+    def _do_boot_hostap_check(self, saved: dict):
         logger.info('Saved HostAP config has enabled=true — attempting boot start')
         result = self.start_hostap(saved)
         if result.get('success'):
@@ -4299,11 +4475,14 @@ class WifiManager:
             )
             return
 
-        # Card busy at boot (probably scanning) — queue lazy
+        # Transient at boot (card busy/scanning, or a bring-up race) — queue
+        # lazy start AND run a bounded background retry, since at boot the card
+        # is often already free and no card-return event will fire.
         self._hostap_lazy_pending = True
+        self._start_hostap_retry_loop()
         logger.info(
-            'HostAP card unavailable at boot — queued for lazy start: %s',
-            result.get('error'),
+            'HostAP start failed transiently at boot — retrying; queued for '
+            'lazy start too: %s', result.get('error'),
         )
 
     # ------------------------------------------------------------------
