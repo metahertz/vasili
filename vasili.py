@@ -5838,7 +5838,7 @@ def wipe_all_data():
             wifi_manager.probe_history._cache.clear()
         if hasattr(wifi_manager.card_manager, 'mac_manager'):
             wifi_manager.card_manager.mac_manager._cache.clear()
-        wifi_manager.card_manager.lease_manager.clear_all()
+        wifi_manager.card_manager.lease_store.clear_all()
 
         return jsonify({
             'status': 'cleared',
