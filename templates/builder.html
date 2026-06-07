@@ -24,6 +24,7 @@
             font-family: inherit; font-size: 0.85em;
         }
         .nav a:hover { background: #30363d; }
+        .nav a.active { background: #1f6feb; border-color: #1f6feb; color: #fff; }
 
         .help-box {
             background: #0d2942; border: 1px solid #1f6feb44;
@@ -180,8 +181,9 @@
         <div class="nav">
             <h1>VASILI Pipeline Builder</h1>
             <div class="nav-links">
-                <a href="/config">Settings</a>
                 <a href="/">Dashboard</a>
+                <a href="/builder" class="active">Pipelines</a>
+                <a href="/config">Settings</a>
             </div>
         </div>
 

@@ -23,6 +23,7 @@
             font-family: inherit; font-size: 0.85em;
         }
         .nav a:hover { background: #30363d; }
+        .nav a.active { background: #1f6feb; border-color: #1f6feb; color: #fff; }
         .section {
             background: #161b22; border: 1px solid #30363d;
             border-radius: 6px; padding: 16px; margin-bottom: 16px;
@@ -175,8 +176,9 @@
         <div class="nav">
             <h1>VASILI Settings</h1>
             <div style="display:flex;gap:8px">
-                <a href="/builder">Pipelines</a>
                 <a href="/">Dashboard</a>
+                <a href="/builder">Pipelines</a>
+                <a href="/config" class="active">Settings</a>
             </div>
         </div>
 
