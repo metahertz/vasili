@@ -171,6 +171,7 @@ class TestAutoSelectorEvaluation:
         mock_wifi_manager = Mock()
         mock_wifi_manager.status = {}
         mock_wifi_manager.suitable_connections = []
+        mock_wifi_manager._bridge_override_iface = None  # no Bridge Override active
 
         # Create mock connections
         network1 = WifiNetwork('TestNet1', 'AA:BB:CC:DD:EE:01', 70, 6, 'WPA2', False)
@@ -211,6 +212,7 @@ class TestAutoSelectorEvaluation:
     def test_evaluate_and_switch_with_improvement(self, mock_emit_conn, mock_emit_status):
         """Test switching to better connection when improvement threshold is met"""
         mock_wifi_manager = Mock()
+        mock_wifi_manager._bridge_override_iface = None  # no Bridge Override active
 
         # Create mock connections
         network1 = WifiNetwork('CurrentNet', 'AA:BB:CC:DD:EE:01', 70, 6, 'WPA2', False)

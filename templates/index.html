@@ -346,23 +346,37 @@
             if (!conns || !conns.length) { list.innerHTML = '<div class="empty">None</div>'; return; }
             list.innerHTML = conns.map((c, i) => {
                 const n = c.network;
-                const action = c.bridged
-                    ? '<span class="badge badge-connection">BRIDGED</span>'
-                    : `<button class="btn btn-primary btn-sm" onclick="useConnection(${i})">Bridge</button>`;
-                const bw = c.bridged
+                let action;
+                if (c.override) {
+                    action = `<span class="badge" style="background:#d2992233;color:#f0883e">OVERRIDE</span>
+                        <button class="btn btn-sm" style="margin-left:6px" onclick="stopBridgeOverride()">Unbridge</button>`;
+                } else if (c.bridged) {
+                    action = `<span class="badge badge-connection">BRIDGED</span>
+                        <button class="btn btn-sm" style="margin-left:6px" onclick="unbridge()">Unbridge</button>`;
+                } else {
+                    action = `<button class="btn btn-primary btn-sm" onclick="useConnection(${i})">Bridge</button>`;
+                }
+                const bw = (c.bridged || c.override)
                     ? ` <span class="bw" data-iface="${c.interface}"></span>`
+                    : '';
+                const note = c.override
+                    ? `<div style="color:#8b949e;font-size:0.8em;margin-top:2px">Investigation mode — forced upstream, may have no internet</div>`
                     : '';
                 return `<div class="conn-item">
                     <div style="display:flex;justify-content:space-between;align-items:center">
                         <div><span class="ssid">${n.ssid||'(Hidden)'}</span>${n.uncloaked?' <span class="badge badge-uncloaked">UNCLOAKED</span>':''} <span class="method">${c.connection_method} via ${c.interface}</span></div>
-                        ${action}
+                        <div>${action}</div>
                     </div>
                     <div class="conn-stats">
                         <span class="dl">${c.download_speed.toFixed(1)} down</span>
                         <span class="ul">${c.upload_speed.toFixed(1)} up</span>
                         <span class="pg">${c.ping.toFixed(0)}ms</span>${bw}
-                    </div></div>`;
+                    </div>${note}</div>`;
             }).join('');
+        }
+
+        function unbridge() {
+            fetch('/api/stop_connection', {method: 'POST'}).then(r => r.json()).catch(() => {});
         }
 
         let consentGatedStages = [];  // [{name, mode}] — loaded from API
@@ -399,10 +413,36 @@
                     approveHtml = `<span style="margin-left:4px">${btns}</span>`;
                 }
 
+                const ssidArg = (n.ssid||'').replace(/'/g,"\\'");
                 return `<div class="net-item"><span class="net-ssid">${n.ssid||'<i>hidden</i>'}${nuc}${approveHtml}</span>
                     <span class="net-meta"><span class="signal-bar">${bars}</span> ${n.signal_strength}%
-                    <span class="badge badge-${n.is_open?'open':enc.toLowerCase()}">${enc}</span> Ch${n.channel}</span></div>`;
+                    <span class="badge badge-${n.is_open?'open':enc.toLowerCase()}">${enc}</span> Ch${n.channel}
+                    <button class="btn btn-sm" style="margin-left:8px" onclick="bridgeOverride('${n.bssid||''}','${ssidArg}')"
+                        title="Force-bridge this network for portal work / investigation, even with no internet">Override</button></span></div>`;
             }).join('');
+        }
+
+        // ----- Bridge Override -----
+        function bridgeOverride(bssid, ssid) {
+            const label = ssid || bssid || 'this network';
+            if (!confirm('BRIDGE OVERRIDE to "' + label + '"?\n\n'
+                + 'This force-connects a card to the network and makes it the bridged '
+                + 'upstream — even if it has NO internet. Downstream / AP clients will '
+                + 'route through it (and may lose internet) until you Unbridge it.\n\n'
+                + 'Encrypted networks need a saved credential first.')) return;
+            fetch('/api/bridge_override', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({bssid, ssid}),
+            }).then(r => r.json()).then(d => {
+                if (!d.success) alert(d.message || 'Bridge override failed');
+                // Socket events refresh the panels on success.
+            }).catch(() => alert('Bridge override request failed'));
+        }
+
+        function stopBridgeOverride() {
+            fetch('/api/bridge_override/stop', {method: 'POST'})
+                .then(r => r.json()).catch(() => {});
         }
 
         function approveNet(stageName, bssid, ssid, approved) {

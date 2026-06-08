@@ -209,6 +209,10 @@ class ConnectionResult:
     connected: bool
     connection_method: str
     interface: str
+    # Set when an operator force-bridges this network (Bridge Override). A
+    # pinned entry is exempt from auto-selector switching, auto-bridge
+    # replacement, and reconcile teardown until manually unbridged.
+    pinned: bool = False
 
     def calculate_score(self) -> float:
         """
@@ -2936,6 +2940,11 @@ class AutoSelector:
         """Evaluate available connections and switch if a better one is found."""
         self._evaluation_count += 1
 
+        # A Bridge Override pins the bridge — never auto-switch away from it.
+        if self.wifi_manager._bridge_override_iface:
+            logger.debug('Auto-selector idle: bridge override active')
+            return
+
         # Get current bridge info
         current_bridge = self.wifi_manager.status.get('current_bridge')
         if not current_bridge:
@@ -3015,6 +3024,9 @@ class AutoSelector:
 
     def _select_best_connection(self):
         """Select and use the best available connection when none is active."""
+        # A Bridge Override owns the bridge; don't let the selector claim one.
+        if self.wifi_manager._bridge_override_iface:
+            return
         sorted_connections = self.wifi_manager.get_sorted_connections()
 
         if not sorted_connections:
@@ -3722,6 +3734,11 @@ class WifiManager:
             'auto_selection_running': False,
         }
         self.active_bridge = None
+        # Bridge Override: when set, the interface of an operator-forced bridge.
+        # Non-empty ⇒ an override is active; the automatic selector/auto-bridge/
+        # reconcile paths must leave it (and its pinned connection) alone until
+        # the operator unbridges. See start_bridge_override/stop_bridge_override.
+        self._bridge_override_iface: Optional[str] = None
         self.hostap: Optional[HostAP] = None
         self._hostap_lazy_pending = False  # True when AP is confirmed but waiting for card
         self._hostap_claiming = False  # Re-entrancy guard for card-returned callback
@@ -3792,6 +3809,11 @@ class WifiManager:
 
         with self._connections_lock:
             for conn in self.suitable_connections:
+                # A pinned (Bridge Override) entry is never repointed or
+                # dropped — it lives until the operator unbridges, even if
+                # the card momentarily drops association.
+                if conn.pinned:
+                    continue
                 ssid = conn.network.ssid
                 if ssid_by_iface.get(conn.interface) == ssid:
                     continue
@@ -3813,8 +3835,10 @@ class WifiManager:
 
         if to_remove or changes_made:
             # If the active bridge points at a now-missing upstream, tear it
-            # down so the next auto-bridge tick can pick a fresh one.
-            if (self.active_bridge and self.active_bridge.is_active
+            # down so the next auto-bridge tick can pick a fresh one. A Bridge
+            # Override is exempt — it stays up until manually unbridged.
+            if (not self._bridge_override_iface
+                    and self.active_bridge and self.active_bridge.is_active
                     and self.active_bridge.wifi_interface not in ssid_by_iface):
                 logger.info(
                     'Reconcile: tearing down bridge — upstream '
@@ -4088,6 +4112,174 @@ class WifiManager:
         if self.active_bridge:
             self.active_bridge.stop()
             self.status['current_bridge'] = None
+
+    # ------------------------------------------------------------------
+    # Bridge Override — operator force-bridges a chosen network
+    # ------------------------------------------------------------------
+
+    def start_bridge_override(self, bssid: str,
+                              ssid: Optional[str] = None) -> dict:
+        """Force-bridge an operator-chosen network for portal work / investigation.
+
+        Connects a free card to the network (open, or encrypted only if a
+        saved credential exists) and makes it the bridged upstream *even with
+        no internet*, pinned so the auto-selector / auto-bridge / reconcile
+        paths leave it alone until ``stop_bridge_override``. If a card already
+        holds this network, that entry is pinned and bridged instead of
+        leasing a new one.
+
+        Returns ``{'success': bool, 'error'?: str, 'ssid'?, 'interface'?}``.
+        Error codes: network_not_found, no_saved_credentials, no_free_card,
+        connect_failed, bridge_failed.
+        """
+        bssid = (bssid or '').strip()
+        ssid = (ssid or '').strip()
+
+        # Resolve the target network from the latest scan.
+        target = None
+        for net in self.nearby_networks:
+            if bssid and net.bssid and net.bssid.lower() == bssid.lower():
+                target = net
+                break
+            if not bssid and ssid and net.ssid == ssid:
+                target = net
+                break
+        if target is None:
+            return {'success': False, 'error': 'network_not_found'}
+
+        # If a card already holds this network, pin and bridge that entry.
+        with self._connections_lock:
+            existing_index = next(
+                (i for i, c in enumerate(self.suitable_connections)
+                 if c.network.bssid == target.bssid),
+                -1,
+            )
+            if existing_index >= 0:
+                self.suitable_connections[existing_index].pinned = True
+                existing_iface = self.suitable_connections[existing_index].interface
+
+        if existing_index >= 0:
+            self._bridge_override_iface = existing_iface
+            if self.use_connection(existing_index):
+                logger.info(
+                    f'Bridge override: pinned existing connection {target.ssid} '
+                    f'on {existing_iface}'
+                )
+                return {'success': True, 'ssid': target.ssid,
+                        'interface': existing_iface, 'reused': True}
+            self._bridge_override_iface = None
+            with self._connections_lock:
+                if 0 <= existing_index < len(self.suitable_connections):
+                    self.suitable_connections[existing_index].pinned = False
+            return {'success': False, 'error': 'bridge_failed'}
+
+        # Encrypted networks: require a saved credential (no inline prompt).
+        password = None
+        if not target.is_open:
+            password = self.known_networks_store.reveal(target.ssid)
+            if not password:
+                return {'success': False, 'error': 'no_saved_credentials'}
+
+        # Lease a free connection card — fail cleanly if none is available.
+        card = self.card_manager.lease_card(holder='bridge_override')
+        if card is None:
+            return {'success': False, 'error': 'no_free_card'}
+
+        if not card.connect(target, password=password):
+            self.card_manager.return_card(card, holder='bridge_override')
+            return {'success': False, 'error': 'connect_failed'}
+
+        result = ConnectionResult(
+            network=target, download_speed=0, upload_speed=0, ping=0,
+            connected=True, connection_method='override',
+            interface=card.interface, pinned=True,
+        )
+        with self._connections_lock:
+            self.suitable_connections.append(result)
+            index = len(self.suitable_connections) - 1
+        self.connection_monitor.add_card(card)
+
+        self._bridge_override_iface = card.interface
+        if self.use_connection(index):
+            logger.info(
+                f'Bridge override: forced + bridged {target.ssid} '
+                f'on {card.interface} (no-internet OK)'
+            )
+            return {'success': True, 'ssid': target.ssid,
+                    'interface': card.interface}
+
+        # Bridge setup failed — unwind everything.
+        self._bridge_override_iface = None
+        with self._connections_lock:
+            if result in self.suitable_connections:
+                self.suitable_connections.remove(result)
+        self.connection_monitor.remove_card(card)
+        try:
+            card.disconnect()
+        except Exception:
+            pass
+        self.card_manager.return_card(card, holder='bridge_override')
+        return {'success': False, 'error': 'bridge_failed'}
+
+    def stop_bridge_override(self) -> dict:
+        """Tear down an active Bridge Override and restore normal bridging.
+
+        Stops the forced bridge, disconnects + returns the leased card, drops
+        the pinned entry, clears the override flag, and (if auto-bridge is on)
+        lets the best real connection take over so downstream clients regain
+        internet. Idempotent.
+        """
+        iface = self._bridge_override_iface
+        if not iface:
+            return {'success': True, 'changed': False}
+
+        if self.active_bridge:
+            self.active_bridge.stop()
+            self.status['current_bridge'] = None
+
+        removed = None
+        with self._connections_lock:
+            for c in list(self.suitable_connections):
+                if c.interface == iface and c.pinned:
+                    self.suitable_connections.remove(c)
+                    removed = c
+                    break
+
+        card = self._get_card_for_interface(iface)
+        if card:
+            self.connection_monitor.remove_card(card)
+            try:
+                card.disconnect()
+            except Exception:
+                pass
+            self.card_manager.return_card(card, holder='bridge_override')
+
+        self._bridge_override_iface = None
+
+        # Let auto-bridge restore a real internet upstream for downstream users.
+        if self._auto_bridge_enabled and not (
+            self.active_bridge and self.active_bridge.is_active
+        ):
+            try:
+                with self._connections_lock:
+                    sorted_conns = sorted(
+                        self.suitable_connections,
+                        key=lambda c: c.calculate_score(), reverse=True,
+                    )
+                    best = sorted_conns[0] if sorted_conns else None
+                    best_index = (
+                        self.suitable_connections.index(best)
+                        if best is not None else -1
+                    )
+                if best is not None:
+                    self.use_connection(best_index)
+            except Exception as e:
+                logger.error(f'Restore auto-bridge after override failed: {e}')
+
+        emit_connections_update()
+        emit_status_update()
+        return {'success': True, 'changed': True,
+                'ssid': removed.network.ssid if removed else None}
 
     # ------------------------------------------------------------------
     # HostAP management
@@ -4914,8 +5106,9 @@ class WifiManager:
 
         # Auto-bridge: if enabled and no bridge is currently active, pick the
         # best entry from suitable_connections (by score) and bridge it now
-        # instead of waiting for the auto-selector's evaluation tick.
-        if self._auto_bridge_enabled and not (
+        # instead of waiting for the auto-selector's evaluation tick. Never
+        # bridge over an active Bridge Override.
+        if self._auto_bridge_enabled and not self._bridge_override_iface and not (
             self.active_bridge and self.active_bridge.is_active
         ):
             try:
@@ -5253,6 +5446,7 @@ def emit_connections_update():
         bridged_iface = (
             bridge.wifi_interface if bridge and bridge.is_active else None
         )
+        override_iface = wifi_manager._bridge_override_iface
         for conn in conns_snapshot:
             conn_dict = {
                 'network': {
@@ -5271,6 +5465,7 @@ def emit_connections_update():
                 'connection_method': conn.connection_method,
                 'interface': conn.interface,
                 'bridged': (conn.interface == bridged_iface),
+                'override': bool(override_iface) and conn.interface == override_iface,
             }
             connections_data.append(conn_dict)
         socketio.emit('connections_update', {'connections': connections_data})
@@ -5318,10 +5513,12 @@ def get_connections():
     bridged_iface = (
         bridge.wifi_interface if bridge and bridge.is_active else None
     )
+    override_iface = wifi_manager._bridge_override_iface
     out = []
     for conn in wifi_manager.suitable_connections:
         d = vars(conn).copy()
         d['bridged'] = (conn.interface == bridged_iface)
+        d['override'] = bool(override_iface) and conn.interface == override_iface
         out.append(d)
     return jsonify(out)
 
@@ -5862,6 +6059,48 @@ def stop_connection():
     emit_status_update()
     emit_connections_update()
     return jsonify({'success': True})
+
+
+# Human-readable messages for start_bridge_override error codes.
+_BRIDGE_OVERRIDE_ERRORS = {
+    'network_not_found': 'Network not found in the latest scan — rescan and retry.',
+    'no_saved_credentials': 'Encrypted network: add its password under Saved Wi-Fi '
+                            'Credentials first (override does not prompt).',
+    'no_free_card': 'No free WiFi card — stop another connection to free one, then retry.',
+    'connect_failed': 'Could not associate to the network.',
+    'bridge_failed': 'Associated, but failed to set up the bridge.',
+}
+
+
+@app.route('/api/bridge_override', methods=['POST'])
+def bridge_override():
+    """Force-bridge a chosen network even with no internet (Bridge Override).
+
+    Body: ``{bssid, ssid?}``. Pins the connection so automatic switching /
+    reconcile won't disturb it until /api/bridge_override/stop.
+    """
+    data = request.get_json(silent=True) or {}
+    bssid = (data.get('bssid') or '').strip()
+    ssid = (data.get('ssid') or '').strip()
+    if not bssid and not ssid:
+        return jsonify({'success': False, 'error': 'bssid or ssid required'}), 400
+    result = wifi_manager.start_bridge_override(bssid, ssid)
+    emit_status_update()
+    emit_connections_update()
+    if not result.get('success'):
+        result['message'] = _BRIDGE_OVERRIDE_ERRORS.get(
+            result.get('error'), 'Bridge override failed.'
+        )
+    return jsonify(result)
+
+
+@app.route('/api/bridge_override/stop', methods=['POST'])
+def bridge_override_stop():
+    """Tear down the active Bridge Override and restore normal bridging."""
+    result = wifi_manager.stop_bridge_override()
+    emit_status_update()
+    emit_connections_update()
+    return jsonify(result)
 
 
 @app.route('/api/connections/sorted')
