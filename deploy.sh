@@ -177,8 +177,9 @@ ssh -p "$REMOTE_PORT" "$REMOTE_USER@$REMOTE_HOST" bash <<ENDSSH
         build-essential \\
         libnetfilter-queue-dev \\
         bluez \\
-        libdbus-1-dev \\
-        libglib2.0-dev \\
+        python3-dbus \\
+        python3-gi \\
+        gir1.2-glib-2.0 \\
         gnupg \\
         curl
 
@@ -242,9 +243,15 @@ ssh -p "$REMOTE_PORT" "$REMOTE_USER@$REMOTE_HOST" bash <<ENDSSH
     # Ensure pipx is set up
     pipx ensurepath || true
 
-    # Install dependencies from requirements.txt into a venv
+    # Install dependencies from requirements.txt into a venv.
+    # --system-site-packages lets the venv import the distro-provided
+    # python3-dbus / python3-gi (PyGObject) bindings used by the BLE control
+    # interface and ConnectionMonitor's D-Bus path, so pip doesn't have to
+    # compile dbus-python / PyGObject from source on the Pi (which would need
+    # gobject-introspection + cairo + girepository -dev headers, and the
+    # girepository package is renamed between Ubuntu 22.04 and 24.04).
     echo "[INFO] Creating virtual environment for vasili..."
-    python3 -m venv $REMOTE_DIR/venv
+    python3 -m venv --system-site-packages $REMOTE_DIR/venv
 
     echo "[INFO] Installing dependencies via pipx-style isolated environment..."
     $REMOTE_DIR/venv/bin/pip install --upgrade pip

@@ -13,8 +13,12 @@ cryptography
 # on the Pi). The browser path degrades gracefully if Playwright/Chromium are
 # absent — the lightweight HTTP path still governs.
 playwright
-# Optional but recommended on Pi: enables ConnectionMonitor's push-based
-# D-Bus StateChanged path (org.freedesktop.NetworkManager.Device). If
-# unavailable, the monitor transparently falls back to nmcli polling.
+# D-Bus + GLib bindings. Used by the BLE control interface (ble_peripheral.py,
+# talks to BlueZ over the system bus) and by ConnectionMonitor's push-based
+# D-Bus StateChanged path (falls back to nmcli polling if unavailable).
+# On the Pi, deploy.sh installs the distro builds (python3-dbus / python3-gi)
+# and makes the venv --system-site-packages, so pip finds these already
+# satisfied rather than compiling them from source. Listed here so a plain
+# `pip install -r` on a dev box still pulls them when building wheels is viable.
 dbus-python
 PyGObject
