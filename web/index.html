@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Vasili — BLE Control</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main>
+    <header>
+      <h1>Vasili <span class="tag">BLE</span></h1>
+      <p class="subtitle">Out-of-band control over Bluetooth</p>
+    </header>
+
+    <div id="unsupported" class="banner warn" hidden>
+      This browser doesn't support Web Bluetooth. Use desktop
+      <strong>Chrome</strong>, <strong>Edge</strong>, or <strong>Opera</strong>.
+    </div>
+
+    <div id="error" class="banner err" hidden></div>
+
+    <div class="actions">
+      <button id="connectBtn" class="primary">Connect to Vasili</button>
+      <button id="disconnectBtn" hidden>Disconnect</button>
+    </div>
+
+    <section id="panels" hidden>
+      <div class="card">
+        <div class="card-head">
+          <h2>Status</h2>
+          <button id="refreshStatusBtn" class="ghost" title="Refresh">↻</button>
+        </div>
+        <div class="hostap">
+          <label class="switch">
+            <input type="checkbox" id="hostapToggle">
+            <span class="slider"></span>
+          </label>
+          <span id="hostapLabel">HostAP</span>
+        </div>
+        <div id="statusGrid" class="grid"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <h2>Networks</h2>
+          <div>
+            <button id="unbridgeBtn" class="ghost" title="Unbridge">Unbridge</button>
+            <button id="refreshScanBtn" class="ghost" title="Rescan">↻</button>
+          </div>
+        </div>
+        <ul id="networks" class="net-list"></ul>
+        <p class="hint">Tap a network to bridge it. Encrypted networks ask for a
+          password (provisioned on the device).</p>
+      </div>
+    </section>
+
+    <footer>
+      <p>Serve over <code>https://</code> or <code>http://localhost</code>.
+        Pairing is handled by your OS the first time you connect.</p>
+    </footer>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>

@@ -144,6 +144,9 @@ ssh -p "$REMOTE_PORT" "$REMOTE_USER@$REMOTE_HOST" "$SUDO mkdir -p $REMOTE_DIR/{m
 # Transfer files
 log_info "Transferring project files..."
 scp -P "$REMOTE_PORT" vasili.py "$REMOTE_USER@$REMOTE_HOST:$REMOTE_DIR/"
+# Top-level helper modules are not globbed; the BLE control interface lives in
+# its own file and must be copied explicitly.
+scp -P "$REMOTE_PORT" ble_peripheral.py "$REMOTE_USER@$REMOTE_HOST:$REMOTE_DIR/"
 scp -P "$REMOTE_PORT" requirements.txt "$REMOTE_USER@$REMOTE_HOST:$REMOTE_DIR/"
 scp -P "$REMOTE_PORT" vasili.service "$REMOTE_USER@$REMOTE_HOST:$REMOTE_DIR/"
 scp -P "$REMOTE_PORT" modules/*.py "$REMOTE_USER@$REMOTE_HOST:$REMOTE_DIR/modules/" 2>/dev/null || log_warn "No module files found"
@@ -173,6 +176,9 @@ ssh -p "$REMOTE_PORT" "$REMOTE_USER@$REMOTE_HOST" bash <<ENDSSH
         iw \\
         build-essential \\
         libnetfilter-queue-dev \\
+        bluez \\
+        libdbus-1-dev \\
+        libglib2.0-dev \\
         gnupg \\
         curl
 
@@ -218,6 +224,11 @@ MONGOCONF
     \$SUDO systemctl enable mongod
 
     echo "[INFO] MongoDB installed and configured on localhost:27017"
+
+    # Bluetooth — required for the BLE out-of-band control interface.
+    echo "[INFO] Enabling Bluetooth service for the BLE control interface..."
+    \$SUDO systemctl enable bluetooth || true
+    \$SUDO systemctl start bluetooth || true
 ENDSSH
 
 # Install Python dependencies using pipx

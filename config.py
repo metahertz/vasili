@@ -120,6 +120,27 @@ class HostAPConfig:
 
 
 @dataclass
+class BLEConfig:
+    """Bluetooth Low Energy control-interface settings.
+
+    The BLE GATT peripheral is an out-of-band recovery/control channel: it
+    runs independently of the WiFi stack so the device stays reachable from
+    a phone even when HostAP fails to start and no Ethernet cable is present.
+    """
+
+    # Enable the BLE GATT peripheral.
+    enabled: bool = True
+    # BlueZ adapter to advertise on.
+    adapter: str = 'hci0'
+    # Advertised local name (what the phone sees in its scan list).
+    device_name: str = 'Vasili'
+    # Require BLE pairing/bonding (encrypted link) before control writes are
+    # honoured. When False, characteristics are exposed without the encrypt
+    # flags (matches the no-auth web UI; only do this on a trusted bench).
+    require_pairing: bool = True
+
+
+@dataclass
 class VasiliConfig:
     """Main configuration container."""
 
@@ -135,6 +156,7 @@ class VasiliConfig:
     captive_portal: CaptivePortalConfig = field(default_factory=CaptivePortalConfig)
     hostap: HostAPConfig = field(default_factory=HostAPConfig)
     known_networks: KnownNetworksConfig = field(default_factory=KnownNetworksConfig)
+    ble: BLEConfig = field(default_factory=BLEConfig)
 
     @classmethod
     def from_dict(cls, data: dict) -> 'VasiliConfig':
@@ -218,6 +240,15 @@ class VasiliConfig:
             kn_data = data['known_networks'] or {}
             config.known_networks = KnownNetworksConfig(
                 master_key_path=kn_data.get('master_key_path'),
+            )
+
+        if 'ble' in data:
+            ble_data = data['ble'] or {}
+            config.ble = BLEConfig(
+                enabled=ble_data.get('enabled', True),
+                adapter=ble_data.get('adapter', 'hci0'),
+                device_name=ble_data.get('device_name', 'Vasili'),
+                require_pairing=ble_data.get('require_pairing', True),
             )
 
         if 'consent' in data:

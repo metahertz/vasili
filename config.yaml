@@ -118,3 +118,24 @@ known_networks:
   # Path to the master encryption key file. If omitted, the store tries
   # `/home/ubuntu/vasili/.vasili-master.key` then `~/.vasili/master.key`.
   # master_key_path: /home/ubuntu/vasili/.vasili-master.key
+
+# BLE control interface — out-of-band recovery channel over Bluetooth.
+# The Pi 5 has built-in Bluetooth; this GATT peripheral starts independently
+# of (and before) the WiFi stack, so the device is still reachable from a
+# phone when HostAP fails to start and no Ethernet cable is available.
+# It exposes device status, in-range networks, HostAP on/off, and direct
+# network selection. See docs/BLE.md and the companion iOS app in ios/.
+ble:
+  # Set to false to disable the BLE peripheral entirely.
+  enabled: true
+
+  # BlueZ adapter to advertise on (the Pi's built-in controller is hci0).
+  adapter: "hci0"
+
+  # Name advertised to phones in their Bluetooth scan list.
+  device_name: "Vasili"
+
+  # Require BLE pairing/bonding (an encrypted link) before honouring control
+  # writes. Set to false only on a trusted bench — it removes all access
+  # control, matching the no-auth web UI.
+  require_pairing: true

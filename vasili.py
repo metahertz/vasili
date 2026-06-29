@@ -4221,6 +4221,35 @@ class WifiManager:
         self.card_manager.return_card(card, holder='bridge_override')
         return {'success': False, 'error': 'bridge_failed'}
 
+    def select_network(self, bssid: str = '', ssid: str = '',
+                       password: Optional[str] = None) -> dict:
+        """Operator-choose a network to bridge, optionally provisioning a password.
+
+        Thin wrapper over :meth:`start_bridge_override` for callers that can
+        supply a password inline (e.g. the BLE control interface), since
+        ``start_bridge_override`` deliberately has no inline-prompt path and
+        requires a pre-saved credential for encrypted networks.
+
+        If ``password`` is given it is first persisted to the encrypted
+        ``known_networks_store`` (so the existing override path finds it via
+        ``reveal``), then the unchanged lease/connect/pin/bridge logic runs —
+        keeping a single code path for the actual connection and bridging.
+
+        Returns the same ``{'success': bool, ...}`` shape as
+        ``start_bridge_override`` (see its error codes), plus
+        ``{'error': 'store_unavailable'}`` if a password was supplied but the
+        credential vault could not store it.
+        """
+        ssid = (ssid or '').strip()
+        if password:
+            if not ssid:
+                # We need an SSID to key the credential — a BSSID alone can't
+                # be stored against a password in the vault.
+                return {'success': False, 'error': 'ssid_required_for_password'}
+            if not self.known_networks_store.add(ssid=ssid, password=password):
+                return {'success': False, 'error': 'store_unavailable'}
+        return self.start_bridge_override(bssid=bssid, ssid=ssid)
+
     def stop_bridge_override(self) -> dict:
         """Tear down an active Bridge Override and restore normal bridging.
 
@@ -5292,6 +5321,10 @@ app = Flask(__name__)
 app.config['SECRET_KEY'] = 'vasili-secret-key-change-in-production'
 socketio = SocketIO(app, cors_allowed_origins='*')
 wifi_manager: Optional[WifiManager] = None
+# BLE out-of-band control interface (see ble_peripheral.py). Set in main();
+# the emit helpers push status to it so phones get the same updates the web UI
+# does. None when BLE is disabled or its stack is unavailable.
+ble_peripheral = None
 
 # MongoDB setup
 mongo_client = None
@@ -5401,6 +5434,8 @@ def emit_status_update():
             wifi_manager.hostap is not None and wifi_manager.hostap.is_active
         )
         socketio.emit('status_update', wifi_manager.status)
+        if ble_peripheral is not None:
+            ble_peripheral.notify_status()
     except Exception as e:
         logger.error(f'Failed to emit status update: {e}')
 
@@ -5422,6 +5457,8 @@ def emit_scan_update():
                 'uncloaked': getattr(net, 'uncloaked', False),
             })
         socketio.emit('scan_update', {'networks': scan_data})
+        if ble_peripheral is not None:
+            ble_peripheral.notify_scan_changed()
     except Exception as e:
         logger.error(f'Failed to emit scan update: {e}')
 
@@ -6094,6 +6131,31 @@ def bridge_override():
     return jsonify(result)
 
 
+@app.route('/api/select_network', methods=['POST'])
+def select_network():
+    """Choose a network to bridge, optionally provisioning a password inline.
+
+    Body: ``{bssid?, ssid?, password?}``. Unlike /api/bridge_override this
+    accepts a password for a new encrypted network (saved to the credential
+    vault first). Shares the Bridge Override pin/bridge path. Primarily used
+    by the BLE control interface; exposed here for parity and testing.
+    """
+    data = request.get_json(silent=True) or {}
+    bssid = (data.get('bssid') or '').strip()
+    ssid = (data.get('ssid') or '').strip()
+    password = data.get('password') or None
+    if not bssid and not ssid:
+        return jsonify({'success': False, 'error': 'bssid or ssid required'}), 400
+    result = wifi_manager.select_network(bssid, ssid, password)
+    emit_status_update()
+    emit_connections_update()
+    if not result.get('success'):
+        result['message'] = _BRIDGE_OVERRIDE_ERRORS.get(
+            result.get('error'), 'Network selection failed.'
+        )
+    return jsonify(result)
+
+
 @app.route('/api/bridge_override/stop', methods=['POST'])
 def bridge_override_stop():
     """Tear down the active Bridge Override and restore normal bridging."""
@@ -6476,6 +6538,18 @@ def main():
         web_thread.start()
     else:
         logger.info('Web interface disabled, running in headless mode')
+
+    # Start the BLE control interface BEFORE the slow init below. It is the
+    # out-of-band recovery channel: it must keep advertising even if WiFi-card
+    # enumeration or HostAP bring-up hangs (the failure this exists to recover
+    # from). It reads wifi_manager lazily via a getter and tolerates None.
+    global ble_peripheral
+    if config.ble.enabled:
+        from ble_peripheral import BLEPeripheral
+        ble_peripheral = BLEPeripheral(lambda: wifi_manager, config.ble)
+        ble_peripheral.start()
+    else:
+        logger.info('BLE control interface disabled in config')
 
     # Heavy initialization (WiFi cards, MongoDB, HostAP) — the slow part of a
     # restart. Creates the WifiManager and flips the UI from 'initializing'.
