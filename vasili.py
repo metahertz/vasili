@@ -1877,59 +1877,22 @@ class WifiCard:
             logger.error(f'Scan failed on interface {self.interface}: {e}')
             return []
 
-    @staticmethod
-    def _channel_to_freq(channel: int) -> Optional[int]:
-        """Map a WiFi channel to its centre frequency in MHz (2.4 / 5 GHz)."""
-        if not channel or channel < 1:
-            return None
-        if channel == 14:
-            return 2484
-        if channel <= 14:
-            return 2407 + channel * 5
-        return 5000 + channel * 5  # 5 GHz
-
-    def _targeted_scan(self, network: WifiNetwork) -> bool:
-        """Fast single-channel scan on the connecting card for ``network``.
-
-        The dedicated scan card sees the AP, but ``nmcli device wifi connect``
-        only matches *this* card's own scan cache. Rather than a full ~2-4s
-        sweep, scan just the AP's channel (~100-300ms) with ``iw``;
-        wpa_supplicant/NM pick up the resulting BSS via shared nl80211 scan
-        events, so the SSID becomes connectable here. Returns True if the scan
-        ran. No-op (returns False) when the channel is unknown — the caller then
-        relies on the full-rescan fallback.
-        """
-        freq = self._channel_to_freq(network.channel)
-        if freq is None:
-            return False
-        self._scan_phase = 'target-scan'
-        try:
-            subprocess.run(['ip', 'link', 'set', self.interface, 'up'],
-                           capture_output=True)
-            subprocess.run(
-                ['iw', 'dev', self.interface, 'scan', 'freq', str(freq)],
-                capture_output=True, text=True, timeout=8,
-            )
-            logger.info(
-                'Targeted scan on %s (ch %s / %s MHz) for %s',
-                self.interface, network.channel, freq, network.ssid,
-            )
-            return True
-        except Exception as e:
-            logger.debug(
-                'Targeted scan on %s freq %s failed: %s', self.interface, freq, e
-            )
-            return False
-
     def _full_rescan(self) -> None:
-        """Full NM rescan fallback when the targeted scan didn't surface the AP."""
+        """Full NM rescan on this card after a connect failed ssid_not_found.
+
+        NM-native (full-band) so it populates the card's scan cache the same
+        way normal scanning does — unlike a raw single-channel ``iw scan``,
+        which pre-empts nmcli's own scan and breaks the next connect. USB
+        rtw88 adapters can take several seconds to complete a scan after being
+        brought up, so we wait before the retry.
+        """
         self._scan_phase = 'target-rescan'
         try:
             subprocess.run(
                 ['nmcli', 'device', 'wifi', 'rescan', 'ifname', self.interface],
                 capture_output=True, text=True, timeout=15,
             )
-            time.sleep(2)  # let results populate before the retry
+            time.sleep(4)  # let results populate before the retry
         except Exception as e:
             logger.debug('Full rescan on %s failed: %s', self.interface, e)
 
@@ -1991,11 +1954,11 @@ class WifiCard:
         if self._mac_manager and network.bssid:
             self._apply_network_mac(network.bssid)
 
-        # Seed this card's NM scan cache for the target: scan just the AP's
-        # channel (fast) so `nmcli connect` can find a network only the
-        # dedicated scan card saw. Falls back to a full rescan on the first
-        # ssid_not_found below.
-        self._targeted_scan(network)
+        # `nmcli device wifi connect` runs its own internal scan-and-wait, so
+        # we do NOT pre-scan the card here. (A proactive single-channel `iw
+        # scan` pre-empted nmcli's full scan and made every network come back
+        # ssid_not_found.) If a connect does fail ssid_not_found, we do one
+        # full NM rescan and retry — see below.
         rescan_fallback_done = False
 
         while attempt < max_retries:
