@@ -27,12 +27,24 @@ SRV_PRIV=$(cat "$SRV_PRIV_FILE")
 
 WG_CONF=/etc/wireguard/wg-vasili.conf
 SERVER_IP=$(echo "$SUBNET" | sed 's|/.*$||' | awk -F. '{print $1"."$2"."$3".1"}')
+
+# Egress interface to the internet (the container's default route). Client
+# traffic arrives on wg-vasili and must be SNAT/MASQUERADE'd out this iface,
+# or the tunnel comes up but has no internet ("connectivity check failed").
+EGRESS=$(ip -4 route show default 2>/dev/null | awk '{print $5; exit}')
+EGRESS=${EGRESS:-eth0}
+echo "[wg-backend] egress interface: $EGRESS  subnet: $SUBNET"
+
 {
     echo "[Interface]"
     echo "PrivateKey = $SRV_PRIV"
     echo "Address = $SERVER_IP/24"
     # Bound to 5355 so dns-proxy fronts WG on UDP/53.
     echo "ListenPort = 5355"
+    # NAT client traffic out to the internet (+ allow forwarding both ways).
+    # %i is the interface name (wg-vasili); rules are removed on wg-quick down.
+    echo "PostUp = iptables -t nat -A POSTROUTING -s $SUBNET -o $EGRESS -j MASQUERADE; iptables -A FORWARD -i %i -j ACCEPT; iptables -A FORWARD -o %i -j ACCEPT"
+    echo "PostDown = iptables -t nat -D POSTROUTING -s $SUBNET -o $EGRESS -j MASQUERADE; iptables -D FORWARD -i %i -j ACCEPT; iptables -D FORWARD -o %i -j ACCEPT"
     if [[ -n "$CLIENT_PUB" ]]; then
         CLIENT_IP=$(echo "$SUBNET" | sed 's|/.*$||' | awk -F. '{print $1"."$2"."$3".2"}')
         echo ""
