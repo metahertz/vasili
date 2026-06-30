@@ -78,10 +78,12 @@ class DnsTunnelStage(PipelineStage):
         result = helper.establish(source_ip=source_ip,
                                   nameserver=nameserver)
         if not result:
+            reason = getattr(helper, 'last_error', '') or 'tunnel failed to establish'
+            logger.warning('dns_tunnel (%s) failed: %s', tunnel_type, reason)
             return StageResult(
                 success=False, has_internet=False,
                 context_updates={},
-                message='Tunnel establishment failed',
+                message=f'{tunnel_type} tunnel failed: {reason}',
             )
 
         if not helper.verify():
@@ -90,7 +92,8 @@ class DnsTunnelStage(PipelineStage):
             return StageResult(
                 success=False, has_internet=False,
                 context_updates={},
-                message='Tunnel established but no internet through it',
+                message=('tunnel established but no internet through it '
+                         '(connectivity check via the tunnel failed)'),
             )
 
         logger.info('DNS tunnel internet confirmed on %s',

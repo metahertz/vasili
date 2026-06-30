@@ -52,21 +52,35 @@ class WgTunnelHelper:
 
     def establish(self, source_ip: str | None = None) -> dict | None:
         """Bring up the WireGuard interface.  Returns ``{interface, ip}``."""
-        # Derive interface name from config filename
-        # e.g. /etc/wireguard/wg-vasili.conf -> wg-vasili
-        iface = os.path.splitext(os.path.basename(self.config_path))[0]
+        # wg-quick derives the netdev name from the config's basename and
+        # rejects names >15 chars (IFNAMSIZ) with "The config file must be a
+        # valid interface name, followed by .conf". The operator's filename
+        # (e.g. wg-vasili-client.conf -> 16 chars) can trip this, so always
+        # bring the tunnel up under a fixed short interface name: stage the
+        # config at the canonical short path, then up/down by interface.
+        iface = DEFAULT_WG_INTERFACE
+        canonical = f'/etc/wireguard/{iface}.conf'
+        try:
+            if os.path.abspath(self.config_path) != canonical:
+                os.makedirs('/etc/wireguard', exist_ok=True)
+                shutil.copyfile(self.config_path, canonical)
+                os.chmod(canonical, 0o600)
+        except Exception as exc:
+            self.last_error = f'could not stage wg config at {canonical}: {exc}'
+            logger.error(self.last_error)
+            return None
 
         # Tear down any stale instance first
         subprocess.run(
-            ['wg-quick', 'down', self.config_path],
+            ['wg-quick', 'down', iface],
             capture_output=True, timeout=10,
         )
 
-        logger.info('Starting WireGuard tunnel: wg-quick up %s', self.config_path)
+        logger.info('Starting WireGuard tunnel: wg-quick up %s', iface)
 
         try:
             result = subprocess.run(
-                ['wg-quick', 'up', self.config_path],
+                ['wg-quick', 'up', iface],
                 capture_output=True, text=True, timeout=self.timeout,
             )
             if result.returncode != 0:
@@ -125,8 +139,10 @@ class WgTunnelHelper:
 
     def _teardown_wg(self, iface: str):
         try:
+            # Down by interface name (not the config path) — must match the
+            # fixed short name we brought it up under.
             subprocess.run(
-                ['wg-quick', 'down', self.config_path],
+                ['wg-quick', 'down', iface],
                 capture_output=True, timeout=10,
             )
         except Exception as exc:

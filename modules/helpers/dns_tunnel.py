@@ -34,6 +34,10 @@ class DnsTunnelHelper:
         self.process: subprocess.Popen | None = None
         self.tunnel_interface: str | None = None
         self.tunnel_ip: str | None = None
+        # Reason for the most recent establish() failure (e.g. iodine's
+        # "Bad password"/"Server rejected"/"couldn't connect"), surfaced by
+        # DnsTunnelStage in the stage failure message.
+        self.last_error: str = ''
 
     # ------------------------------------------------------------------
     # Public API
@@ -109,13 +113,20 @@ class DnsTunnelHelper:
                 stderr=subprocess.STDOUT,
             )
         except Exception as exc:
+            self.last_error = f'failed to launch iodine: {exc}'
             logger.error('Failed to launch iodine: %s', exc)
             return None
 
         # Poll for the dns0 interface to appear
         if not self._wait_for_interface(IODINE_INTERFACE, self.timeout):
-            # Read any output for diagnostics
-            self._log_process_output()
+            # Capture iodine's own output — that's where the real reason is.
+            captured = self._log_process_output()
+            self.last_error = (
+                f'iodine did not establish the tunnel within {self.timeout}s'
+                + (f' — {captured}' if captured else
+                   ' (no output; check the server_domain NS delegation, '
+                   'password, and that iodined is running on :53)')
+            )
             self.teardown()
             return None
 
@@ -123,6 +134,9 @@ class DnsTunnelHelper:
         self.tunnel_ip = network_isolation.get_interface_ip(IODINE_INTERFACE)
 
         if not self.tunnel_ip:
+            self.last_error = (
+                f'iodine interface {IODINE_INTERFACE} came up but got no IP'
+            )
             logger.error('Tunnel interface %s has no IP', IODINE_INTERFACE)
             self.teardown()
             return None
@@ -146,13 +160,28 @@ class DnsTunnelHelper:
             time.sleep(0.5)
         return False
 
-    def _log_process_output(self):
-        """Read and log whatever the tunnel process has written so far."""
+    def _log_process_output(self) -> str:
+        """Drain iodine's output, log it, and return the most informative line.
+
+        iodine prints the real cause here — "Bad password", "Server rejected
+        secret", "Couldn't connect to server", "DNS query timed out", "Got NXDOMAIN",
+        etc. We surface that to the stage so the failure message names it.
+        """
         if not self.process:
-            return
+            return ''
         try:
             out, _ = self.process.communicate(timeout=2)
-            if out:
-                logger.debug('iodine output: %s', out.decode(errors='replace')[:500])
         except Exception:
-            pass
+            return ''
+        if not out:
+            return ''
+        text = out.decode(errors='replace').strip()
+        logger.debug('iodine output: %s', text[:500])
+        keywords = ('error', 'bad', 'reject', 'fail', 'denied', 'timed out',
+                    'timeout', 'refused', 'nxdomain', 'cannot', "couldn't",
+                    'could not', 'no response', 'unable')
+        lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+        for ln in reversed(lines):
+            if any(k in ln.lower() for k in keywords):
+                return ln[:200]
+        return lines[-1][:200] if lines else ''
