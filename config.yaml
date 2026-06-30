@@ -15,8 +15,11 @@ interfaces:
     # - wlan2
 
   # Dedicated interface for scanning (optional)
-  # If set, this interface will be used exclusively for network scanning
-  # scan_interface: wlan0
+  # If set, this interface will be used exclusively for network scanning.
+  # Pinned to a USB adapter so the onboard wlan0 stays free for HostAP
+  # (otherwise wlan0 gets auto-designated as the scan card and HostAP can't
+  # reserve it — "Cannot reserve wlan0 (busy or scanning card)").
+  scan_interface: wlxb8fbb381eae9
 
 # Module settings
 modules:
@@ -94,8 +97,11 @@ hostap:
   # Set to true to auto-start the AP on boot
   enabled: false
 
-  # Interface to use for the AP (omit to auto-select last connection card)
-  # interface: wlan2
+  # Interface to use for the AP (omit to auto-select last connection card).
+  # Pinned to the onboard radio: it is a far more reliable AP than the
+  # rtw88_8821au USB adapters (which can fail to enter AP mode and even reset
+  # the shared USB bus). Pinning also keeps AP selection deterministic.
+  interface: wlan0
 
   # Network name broadcast by the AP
   ssid: "Vasili-AP"

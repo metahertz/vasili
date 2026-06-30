@@ -833,6 +833,13 @@ class HostAP:
     """Manage a WiFi card as a local access point using hostapd."""
 
     CONF_PATH = '/tmp/vasili-hostapd.conf'
+    # hostapd's control-socket dir — lets hostapd_cli query real AP state
+    # (state=ENABLED) and connected stations. /var/run/hostapd is hostapd_cli's
+    # default search path, so `hostapd_cli -i <if>` works without -p too.
+    CTRL_DIR = '/var/run/hostapd'
+    # hostapd stdout/stderr is redirected here so a failure is diagnosable
+    # without leaving an unread PIPE that could fill and block the process.
+    HOSTAPD_LOG = '/tmp/vasili-hostapd.log'
     AP_SUBNET = '192.168.11'
     AP_IP = '192.168.11.1'
     DHCP_RANGE = ('192.168.11.50', '192.168.11.150')
@@ -923,11 +930,16 @@ class HostAP:
 
         lines = [
             f'interface={self.interface}',
+            'driver=nl80211',
             f'ssid={self.ssid}',
             f'hw_mode={hw_mode}',
             f'channel={self.channel}',
             'ieee80211n=1',
             'wmm_enabled=1',
+            # Control socket so we can verify the AP actually reached
+            # state=ENABLED (and count stations) instead of assuming success.
+            f'ctrl_interface={self.CTRL_DIR}',
+            'ctrl_interface_group=0',
         ]
 
         if hw_mode == 'a':
@@ -986,46 +998,65 @@ class HostAP:
     def _reset_ap_interface(self):
         """Re-assert AP-ready interface state between hostapd retries.
 
-        Bounces the link so any half-configured driver state from a failed
-        attempt is cleared before the next one.
+        Releases the radio from NM and leaves the link DOWN so the next hostapd
+        attempt can bring it straight up into AP mode. We intentionally do NOT
+        bring it back up in managed mode here: some USB drivers (notably
+        rtw88_88xxau) silently fail to switch an already-up managed interface to
+        AP, leaving it stuck managed/down — which is exactly the failure this
+        avoids.
         """
         self._release_from_nm()
         subprocess.run(['ip', 'link', 'set', self.interface, 'down'],
                        capture_output=True)
         time.sleep(0.3)
-        subprocess.run(['ip', 'link', 'set', self.interface, 'up'],
-                       capture_output=True)
 
-    def _configure_interface(self) -> bool:
-        """Release the interface from NetworkManager and assign static IP."""
+    def _prepare_interface_for_ap(self) -> bool:
+        """Release the radio from NM and leave the interface DOWN for hostapd.
+
+        hostapd brings the interface up itself when it switches it to AP mode,
+        so we deliberately do not pre-up it (some drivers won't transition an
+        up managed interface to AP) and do not assign the IP yet — that happens
+        in ``_assign_ap_ip`` once the AP is confirmed enabled.
+        """
         # Take the radio away from NM/wpa_supplicant before hostapd needs it.
         self._release_from_nm()
         # Brief settle so the driver finishes releasing before we reconfigure.
         time.sleep(0.5)
-        # Flush existing addresses
+        # Flush any stale addresses and put the link down for hostapd.
         subprocess.run(
             ['ip', 'addr', 'flush', 'dev', self.interface],
             capture_output=True, text=True,
         )
-        # Assign static IP
+        result = subprocess.run(
+            ['ip', 'link', 'set', self.interface, 'down'],
+            capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            self.last_error = f'interface setup failed: {result.stderr.strip()}'
+            logger.error(f'HostAP: failed to down interface: {result.stderr}')
+            return False
+        return True
+
+    def _assign_ap_ip(self) -> bool:
+        """Assign the AP's static IP, after hostapd has enabled the AP.
+
+        At this point hostapd has already brought the interface up in AP mode;
+        we add the gateway IP the DHCP server and clients use.
+        """
         result = subprocess.run(
             ['ip', 'addr', 'add', f'{self.AP_IP}/24', 'dev', self.interface],
             capture_output=True, text=True,
         )
         if result.returncode != 0 and 'File exists' not in result.stderr:
-            self.last_error = f'interface setup failed: {result.stderr.strip()}'
+            self.last_error = f'interface IP setup failed: {result.stderr.strip()}'
             logger.error(f'HostAP: failed to assign IP: {result.stderr}')
             return False
         self._ip_configured = True
-        # Bring interface up
-        result = subprocess.run(
+        # hostapd should already have the link up in AP mode; ensure it.
+        subprocess.run(
             ['ip', 'link', 'set', self.interface, 'up'],
             capture_output=True, text=True,
         )
-        if result.returncode != 0:
-            self.last_error = f'interface setup failed: {result.stderr.strip()}'
-            logger.error(f'HostAP: failed to bring up interface: {result.stderr}')
-            return False
         return True
 
     def _cleanup_interface(self):
@@ -1061,6 +1092,8 @@ class HostAP:
         'failed to set beacon',
         "wasn't started",
         'hostapd exited immediately',
+        'hostapd exited before enabling',
+        'did not reach enabled state',
         'interface setup failed',
         'dhcp failed',
     )
@@ -1073,52 +1106,63 @@ class HostAP:
         low = output.lower()
         return any(m in low for m in cls._TRANSIENT_HOSTAP_MARKERS)
 
-    def _start_hostapd(self) -> bool:
-        """Launch hostapd, retrying transient driver-mode/busy races.
+    def _ap_enabled(self) -> bool:
+        """True once hostapd has actually brought the AP up (beaconing).
 
-        "nl80211: Could not configure driver mode" and "Device or resource
-        busy" happen when NetworkManager/wpa_supplicant hasn't fully released
-        the interface yet. A few short retries (re-asserting the interface
-        between them) absorb that settling window instead of failing outright.
+        Checks hostapd's own ``state=ENABLED`` via the control socket; falls
+        back to ``iw dev <if> info`` reporting ``type AP`` if hostapd_cli isn't
+        usable. A live hostapd process is NOT sufficient — on some USB drivers
+        hostapd keeps running while the radio never enters AP mode.
+        """
+        try:
+            r = subprocess.run(
+                ['hostapd_cli', '-p', self.CTRL_DIR, '-i', self.interface,
+                 'status'],
+                capture_output=True, text=True, timeout=3,
+            )
+            if r.returncode == 0 and r.stdout:
+                for line in r.stdout.splitlines():
+                    if line.strip() == 'state=ENABLED':
+                        return True
+                return False  # socket up but not enabled yet
+        except Exception:
+            pass
+        # Fallback: the kernel reports the interface as type AP once up.
+        try:
+            r = subprocess.run(
+                ['iw', 'dev', self.interface, 'info'],
+                capture_output=True, text=True, timeout=3,
+            )
+            return 'type AP' in r.stdout
+        except Exception:
+            return False
+
+    def _start_hostapd(self) -> bool:
+        """Launch hostapd and confirm the AP actually reaches ``ENABLED``.
+
+        A live hostapd process is not proof the AP came up: on flaky USB
+        adapters hostapd keeps running while the radio never enters AP mode,
+        which used to make vasili report HostAP "active" with no SSID
+        broadcasting. So we poll for real ``state=ENABLED`` and treat
+        "alive but never enabled" as a (retryable) failure.
+
+        Retries bounce the link via ``_reset_ap_interface`` between attempts —
+        the same down/clean-slate that lets these drivers come up. hostapd
+        output is redirected to a log file (not an unread PIPE) so diagnostics
+        survive and the process can't block on a full pipe buffer.
         """
         attempts = 3
+        enable_timeout = 8  # seconds to reach state=ENABLED per attempt
         for attempt in range(1, attempts + 1):
+            try:
+                logf = open(self.HOSTAPD_LOG, 'wb')
+            except Exception:
+                logf = subprocess.DEVNULL
             try:
                 self._hostapd_process = subprocess.Popen(
                     ['hostapd', self.CONF_PATH],
-                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    stdout=logf, stderr=subprocess.STDOUT,
                 )
-                # Give hostapd a moment to start
-                time.sleep(2)
-                if self._hostapd_process.poll() is None:
-                    logger.info(
-                        f'HostAP: hostapd started (pid {self._hostapd_process.pid})'
-                    )
-                    return True
-
-                # Exited immediately — capture diagnostics.
-                stdout, stderr = self._hostapd_process.communicate()
-                # hostapd writes most of its diagnostics to stdout; fall
-                # back to stderr if stdout is empty.
-                msg = (stdout or b'').decode(errors='replace').strip()
-                if not msg:
-                    msg = (stderr or b'').decode(errors='replace').strip()
-                self.last_error = (
-                    self._summarise_hostapd_error(msg) or 'hostapd exited immediately'
-                )
-                self._hostapd_process = None
-
-                if attempt < attempts and self._is_transient_hostapd_error(msg):
-                    logger.warning(
-                        'HostAP: hostapd transient failure '
-                        f'(attempt {attempt}/{attempts}): {msg[:200]} — retrying'
-                    )
-                    self._reset_ap_interface()
-                    time.sleep(1.5)
-                    continue
-
-                logger.error(f'HostAP: hostapd exited: {msg[:400]}')
-                return False
             except FileNotFoundError:
                 self.last_error = 'hostapd binary not found'
                 logger.error('HostAP: hostapd binary not found in PATH')
@@ -1127,6 +1171,62 @@ class HostAP:
                 self.last_error = f'failed to launch hostapd: {e}'
                 logger.error(f'HostAP: failed to start hostapd: {e}')
                 return False
+            finally:
+                # Child holds its own fd; close the parent's copy.
+                if hasattr(logf, 'close'):
+                    logf.close()
+
+            # Wait for the AP to actually enable (or hostapd to die).
+            deadline = time.monotonic() + enable_timeout
+            enabled = False
+            exited = False
+            while time.monotonic() < deadline:
+                if self._hostapd_process.poll() is not None:
+                    exited = True
+                    break
+                if self._ap_enabled():
+                    enabled = True
+                    break
+                time.sleep(0.5)
+
+            if enabled:
+                logger.info(
+                    'HostAP: AP enabled on %s (hostapd pid %s)',
+                    self.interface, self._hostapd_process.pid,
+                )
+                return True
+
+            # Not enabled — stop the (possibly still-running) process and read
+            # whatever hostapd logged for a diagnosis.
+            self._stop_hostapd()
+            msg = ''
+            try:
+                with open(self.HOSTAPD_LOG, 'r', errors='replace') as f:
+                    msg = f.read().strip()
+            except Exception:
+                pass
+            if exited:
+                detail = (self._summarise_hostapd_error(msg)
+                          or 'hostapd exited before enabling the AP')
+            else:
+                detail = (self._summarise_hostapd_error(msg)
+                          or 'AP did not reach enabled state')
+            self.last_error = detail
+
+            if attempt < attempts and (
+                self._is_transient_hostapd_error(msg)
+                or self._is_transient_hostapd_error(detail)
+            ):
+                logger.warning(
+                    'HostAP: AP not enabled (attempt %s/%s): %s — bouncing '
+                    'link and retrying', attempt, attempts, detail[:200],
+                )
+                self._reset_ap_interface()
+                time.sleep(1.5)
+                continue
+
+            logger.error('HostAP: failed to enable AP: %s', detail[:400])
+            return False
         return False
 
     @staticmethod
@@ -1323,13 +1423,19 @@ class HostAP:
 
         self._write_hostapd_conf()
 
-        if not self._configure_interface():
-            # _configure_interface already set NM 'managed no'; restore it so
-            # the card is usable again when returned to the connection pool.
+        if not self._prepare_interface_for_ap():
+            # _prepare_interface_for_ap already set NM 'managed no'; restore it
+            # so the card is usable again when returned to the connection pool.
             self._cleanup_interface()
             return False
 
         if not self._start_hostapd():
+            self._cleanup_interface()
+            return False
+
+        # hostapd has the AP enabled; now give the interface its gateway IP.
+        if not self._assign_ap_ip():
+            self._stop_hostapd()
             self._cleanup_interface()
             return False
 
@@ -1365,7 +1471,8 @@ class HostAP:
         """Count connected stations via hostapd_cli."""
         try:
             result = subprocess.run(
-                ['hostapd_cli', '-i', self.interface, 'all_sta'],
+                ['hostapd_cli', '-p', self.CTRL_DIR, '-i', self.interface,
+                 'all_sta'],
                 capture_output=True, text=True, timeout=3,
             )
             if result.returncode != 0:
