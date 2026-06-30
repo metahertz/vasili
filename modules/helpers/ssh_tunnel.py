@@ -39,6 +39,10 @@ class SshTunnelHelper:
         self.process: subprocess.Popen | None = None
         self.tunnel_interface: str | None = None
         self.tunnel_ip: str | None = None
+        # Human-readable reason for the most recent establish() failure
+        # (e.g. the ssh error: connection refused / auth / forward failed),
+        # surfaced by DnsPortTunnelStage in the stage failure message.
+        self.last_error: str = ''
 
     # ------------------------------------------------------------------
     # Public API
@@ -80,17 +84,27 @@ class SshTunnelHelper:
                 stderr=subprocess.STDOUT,
             )
         except Exception as exc:
+            self.last_error = f'failed to launch ssh: {exc}'
             logger.error('Failed to launch ssh: %s', exc)
             return None
 
         # Wait for the tun interface to appear
         if not self._wait_for_interface(SSH_TUN_INTERFACE, self.timeout):
-            self._log_process_output()
+            captured = self._log_process_output()
+            self.last_error = (
+                f'ssh did not establish the tun within {self.timeout}s'
+                + (f' — {captured}' if captured else
+                   ' (no output; likely connect timeout or blocked TCP/53)')
+            )
             self.teardown()
             return None
 
         # Configure the local tun endpoint
         if not self._configure_tun():
+            self.last_error = (
+                f'tun device {SSH_TUN_INTERFACE} came up but local '
+                'configuration (ip/route) failed'
+            )
             self.teardown()
             return None
 
@@ -176,12 +190,30 @@ class SshTunnelHelper:
             time.sleep(0.5)
         return False
 
-    def _log_process_output(self):
+    def _log_process_output(self) -> str:
+        """Drain ssh's output, log it, and return the most informative line.
+
+        ssh prints the real cause here — "Connection refused", "Permission
+        denied (publickey)", "channel 0: open failed",
+        "ssh: connect to host … port 53: Connection timed out", etc. We surface
+        that to the stage so the failure message names the actual problem.
+        """
         if not self.process:
-            return
+            return ''
         try:
             out, _ = self.process.communicate(timeout=2)
-            if out:
-                logger.debug('ssh output: %s', out.decode(errors='replace')[:500])
         except Exception:
-            pass
+            return ''
+        if not out:
+            return ''
+        text = out.decode(errors='replace').strip()
+        logger.debug('ssh output: %s', text[:500])
+        # Prefer the last line mentioning a known failure keyword, else the
+        # last non-empty line.
+        keywords = ('denied', 'refused', 'timed out', 'forward', 'failed',
+                    'unreachable', 'no route', 'closed', 'unknown', 'error')
+        lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+        for ln in reversed(lines):
+            if any(k in ln.lower() for k in keywords):
+                return ln[:200]
+        return lines[-1][:200] if lines else ''

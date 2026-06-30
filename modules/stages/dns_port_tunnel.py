@@ -45,31 +45,50 @@ class DnsPortTunnelStage(PipelineStage):
         has_tcp = context.get('dns_reachable_tcp', False)
         has_udp = context.get('dns_reachable_udp', False)
 
+        # Record why each method was skipped or failed so the stage message
+        # names the real cause instead of a generic "neither succeeded".
+        attempts: list[str] = []
+
         # --- Try SSH tunnel over TCP/53 ---
         ssh_server = cfg.get('ssh_server', '')
-        if ssh_server and has_tcp:
-            result = self._try_ssh(cfg, source_ip)
+        if not ssh_server:
+            attempts.append('SSH/53 not configured (no ssh_server set)')
+        elif not has_tcp:
+            attempts.append('SSH/53 skipped — TCP/53 not reachable from this network')
+        else:
+            result, reason = self._try_ssh(cfg, source_ip)
             if result:
                 return result
+            attempts.append(f'SSH/53 failed: {reason}')
 
         # --- Try WireGuard over UDP/53 ---
         wg_config = cfg.get('wg_config_path', '')
-        if wg_config and has_udp:
-            result = self._try_wireguard(cfg)
+        if not wg_config:
+            attempts.append('WireGuard/53 not configured (no wg_config_path set)')
+        elif not has_udp:
+            attempts.append('WireGuard/53 skipped — UDP/53 not reachable from this network')
+        else:
+            result, reason = self._try_wireguard(cfg)
             if result:
                 return result
+            attempts.append(f'WireGuard/53 failed: {reason}')
 
+        message = 'No DNS-port tunnel succeeded — ' + '; '.join(attempts)
+        logger.warning('dns_port_tunnel: %s', message)
         return StageResult(
             success=False, has_internet=False,
             context_updates={},
-            message='Neither SSH/53 nor WireGuard/53 succeeded',
+            message=message,
         )
 
     # ------------------------------------------------------------------
     # SSH tunnel attempt
     # ------------------------------------------------------------------
 
-    def _try_ssh(self, cfg: dict, source_ip: str | None) -> StageResult | None:
+    def _try_ssh(self, cfg: dict,
+                 source_ip: str | None) -> tuple[StageResult | None, str]:
+        """Returns ``(result, reason)``; ``result`` is None on failure and
+        ``reason`` explains why (for the stage failure message)."""
         from modules.helpers.ssh_tunnel import SshTunnelHelper
 
         helper = SshTunnelHelper(
@@ -82,17 +101,20 @@ class DnsPortTunnelStage(PipelineStage):
 
         if not helper.is_available():
             logger.info('ssh not installed — skipping SSH/53 tunnel')
-            return None
+            return None, 'ssh client not installed on this device'
 
-        logger.info('Attempting SSH tunnel to %s:53', cfg['ssh_server'])
+        logger.info('Attempting SSH tunnel to %s:53 (user %s, source %s)',
+                    cfg['ssh_server'], cfg.get('ssh_user', 'root'),
+                    source_ip or 'default')
         result = helper.establish(source_ip=source_ip)
         if not result:
-            return None
+            return None, (helper.last_error or 'tunnel failed to establish')
 
         if not helper.verify():
             logger.info('SSH tunnel up but no internet — tearing down')
             helper.teardown()
-            return None
+            return None, ('tunnel established but no internet through it '
+                          '(connectivity check via the tun failed)')
 
         logger.info('SSH/53 tunnel internet confirmed on %s',
                      helper.tunnel_interface)
@@ -105,13 +127,15 @@ class DnsPortTunnelStage(PipelineStage):
                 '_tunnel_helper': helper,
             },
             message=f'SSH tunnel on port 53 via {helper.tunnel_interface}',
-        )
+        ), ''
 
     # ------------------------------------------------------------------
     # WireGuard tunnel attempt
     # ------------------------------------------------------------------
 
-    def _try_wireguard(self, cfg: dict) -> StageResult | None:
+    def _try_wireguard(self, cfg: dict) -> tuple[StageResult | None, str]:
+        """Returns ``(result, reason)``; ``result`` is None on failure and
+        ``reason`` explains why (for the stage failure message)."""
         from modules.helpers.wg_tunnel import WgTunnelHelper
 
         helper = WgTunnelHelper(
@@ -120,19 +144,27 @@ class DnsPortTunnelStage(PipelineStage):
         )
 
         if not helper.is_available():
-            logger.info('wg-quick not installed or config missing — '
-                        'skipping WireGuard/53')
-            return None
+            import os
+            import shutil
+            if not shutil.which('wg-quick'):
+                reason = 'wg-quick not installed on this device'
+            elif not os.path.isfile(cfg['wg_config_path']):
+                reason = f'WireGuard config not found at {cfg["wg_config_path"]}'
+            else:
+                reason = 'WireGuard prerequisites unavailable'
+            logger.info('WireGuard/53 unavailable: %s', reason)
+            return None, reason
 
         logger.info('Attempting WireGuard tunnel via %s', cfg['wg_config_path'])
         result = helper.establish()
         if not result:
-            return None
+            return None, (helper.last_error or 'tunnel failed to establish')
 
         if not helper.verify():
             logger.info('WireGuard tunnel up but no internet — tearing down')
             helper.teardown()
-            return None
+            return None, ('tunnel established but no internet through it '
+                          '(connectivity check via the tunnel failed)')
 
         logger.info('WireGuard/53 tunnel internet confirmed on %s',
                      helper.tunnel_interface)
@@ -145,7 +177,7 @@ class DnsPortTunnelStage(PipelineStage):
                 '_tunnel_helper': helper,
             },
             message=f'WireGuard tunnel on port 53 via {helper.tunnel_interface}',
-        )
+        ), ''
 
     # ------------------------------------------------------------------
     # Config

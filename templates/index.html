@@ -276,6 +276,16 @@
                     ? '<span class="badge badge-up">UP</span>'
                     : '<span class="badge badge-down">DOWN</span>';
 
+                // Scan-phase tag: card is seeding its NM scan cache before a
+                // connect — TARGET-SCAN (fast single-channel) or TARGET-RESCAN
+                // (full-rescan fallback).
+                let scanTag = '';
+                if (c.scan_phase === 'target-scan') {
+                    scanTag = ' <span class="badge" style="background:#388bfd33;color:#58a6ff">TARGET-SCAN</span>';
+                } else if (c.scan_phase === 'target-rescan') {
+                    scanTag = ' <span class="badge" style="background:#bb800933;color:#d29922">TARGET-RESCAN</span>';
+                }
+
                 // Supported bands
                 const bands = (c.supported_bands||[]).map(b =>
                     `<span class="badge" style="background:#30363d;color:${b===c.current_band?'#3fb950':'#8b949e'};font-size:0.7em">${b}</span>`
@@ -328,7 +338,7 @@
                 return `<div class="card-item">
                     <div class="card-header">
                         <span class="card-iface">${c.interface}</span>
-                        <span>${role} ${state} ${up}</span>
+                        <span>${role} ${state} ${up}${scanTag}</span>
                     </div>
                     <div class="card-detail" style="display:flex;justify-content:space-between">
                         <span>${bands}</span>

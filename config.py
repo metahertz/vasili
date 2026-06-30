@@ -51,6 +51,31 @@ class ScannerConfig:
 
 
 @dataclass
+class ConnectionConfig:
+    """WiFi connection attempt timing.
+
+    Weak APs (low signal) associate more slowly and flakily, so they get a
+    longer per-attempt timeout and more retries than strong ones — useful for
+    pulling in distant networks on the initial connection.
+    """
+
+    # Per-attempt nmcli timeout, seconds (normal-signal networks).
+    attempt_timeout: float = 10.0
+    # Attempts per network (normal-signal networks).
+    max_retries: int = 3
+    # Base backoff between retries, seconds (doubles each attempt).
+    base_delay: float = 1.0
+    # A network whose signal (nmcli 0-100 scale) is at or below this is treated
+    # as "weak" and gets the longer settings below. Set to 0 to disable
+    # weak-signal handling entirely.
+    weak_signal_threshold: int = 40
+    # Per-attempt timeout for weak-signal networks, seconds.
+    weak_signal_timeout: float = 25.0
+    # Attempts for weak-signal networks.
+    weak_signal_retries: int = 4
+
+
+@dataclass
 class WebConfig:
     """Web interface settings."""
 
@@ -147,6 +172,7 @@ class VasiliConfig:
     interfaces: InterfaceConfig = field(default_factory=InterfaceConfig)
     modules: ModuleConfig = field(default_factory=ModuleConfig)
     scanner: ScannerConfig = field(default_factory=ScannerConfig)
+    connection: ConnectionConfig = field(default_factory=ConnectionConfig)
     web: WebConfig = field(default_factory=WebConfig)
     # Per-module consent for headless operation: {module_name: bool}
     consent: dict = field(default_factory=dict)
@@ -183,6 +209,17 @@ class VasiliConfig:
             scan_data = data['scanner']
             config.scanner = ScannerConfig(
                 scan_interval=scan_data.get('scan_interval', 5),
+            )
+
+        if 'connection' in data:
+            conn_data = data['connection'] or {}
+            config.connection = ConnectionConfig(
+                attempt_timeout=conn_data.get('attempt_timeout', 10.0),
+                max_retries=conn_data.get('max_retries', 3),
+                base_delay=conn_data.get('base_delay', 1.0),
+                weak_signal_threshold=conn_data.get('weak_signal_threshold', 40),
+                weak_signal_timeout=conn_data.get('weak_signal_timeout', 25.0),
+                weak_signal_retries=conn_data.get('weak_signal_retries', 4),
             )
 
         if 'web' in data:

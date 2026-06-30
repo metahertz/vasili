@@ -34,6 +34,9 @@ class WgTunnelHelper:
 
         self.tunnel_interface: str | None = None
         self.tunnel_ip: str | None = None
+        # Reason for the most recent establish() failure, surfaced by
+        # DnsPortTunnelStage in the stage failure message.
+        self.last_error: str = ''
 
     # ------------------------------------------------------------------
     # Public API
@@ -67,17 +70,32 @@ class WgTunnelHelper:
                 capture_output=True, text=True, timeout=self.timeout,
             )
             if result.returncode != 0:
-                logger.error('wg-quick up failed: %s', result.stderr[:300])
+                err = (result.stderr or result.stdout or '').strip()
+                # wg-quick echoes each command; keep the line that actually errored.
+                err_line = next(
+                    (ln.strip() for ln in reversed(err.splitlines())
+                     if 'error' in ln.lower() or 'resolve' in ln.lower()
+                     or 'failed' in ln.lower() or 'denied' in ln.lower()),
+                    err.splitlines()[-1].strip() if err else '',
+                )
+                self.last_error = f'wg-quick up failed: {err_line[:200]}'
+                logger.error('wg-quick up failed: %s', err[:300])
                 return None
         except subprocess.TimeoutExpired:
+            self.last_error = f'wg-quick up timed out after {self.timeout}s'
             logger.error('wg-quick up timed out after %ds', self.timeout)
             return None
         except Exception as exc:
+            self.last_error = f'failed to start wg-quick: {exc}'
             logger.error('Failed to start WireGuard: %s', exc)
             return None
 
         # Wait for the interface to get an IP
         if not self._wait_for_ip(iface, self.timeout):
+            self.last_error = (
+                f'interface {iface} came up but never got an IP '
+                '(handshake likely failed — check peer/keys/endpoint)'
+            )
             logger.error('WireGuard interface %s has no IP', iface)
             self._teardown_wg(iface)
             return None

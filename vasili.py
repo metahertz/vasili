@@ -1037,12 +1037,42 @@ class HostAP:
             return False
         return True
 
+    def _clear_stale_ap_ip(self):
+        """Remove the AP gateway IP from any interface other than the AP card.
+
+        The static ``AP_IP`` can linger on cards that were tried as the AP
+        during lazy/retry churn (each attempt assigned it, but only the
+        currently-tracked card is cleaned on teardown). Leaving 192.168.11.1 on
+        several interfaces makes them all claim the same /24 — routing
+        ambiguity that breaks scanning/connection isolation. Strip it from
+        every interface except the one we're about to use.
+        """
+        try:
+            r = subprocess.run(
+                ['ip', '-o', '-4', 'addr', 'show'],
+                capture_output=True, text=True, timeout=5,
+            )
+            for line in r.stdout.splitlines():
+                parts = line.split()
+                # "5: wlxNNN    inet 192.168.11.1/24 ..."
+                if len(parts) < 4:
+                    continue
+                dev, addr = parts[1], parts[3]
+                if dev != self.interface and addr == f'{self.AP_IP}/24':
+                    subprocess.run(['ip', 'addr', 'del', addr, 'dev', dev],
+                                   capture_output=True)
+                    logger.info('HostAP: cleared stale %s from %s', addr, dev)
+        except Exception as e:
+            logger.warning('HostAP: could not clear stale AP IP: %s', e)
+
     def _assign_ap_ip(self) -> bool:
         """Assign the AP's static IP, after hostapd has enabled the AP.
 
         At this point hostapd has already brought the interface up in AP mode;
         we add the gateway IP the DHCP server and clients use.
         """
+        # First make sure no other card is still holding the AP gateway IP.
+        self._clear_stale_ap_ip()
         result = subprocess.run(
             ['ip', 'addr', 'add', f'{self.AP_IP}/24', 'dev', self.interface],
             capture_output=True, text=True,
@@ -1648,6 +1678,77 @@ def _nm_disable_autoconnect_all_wifi() -> int:
     return modified
 
 
+def _prune_stale_wifi_profiles(ssid: Optional[str] = None) -> int:
+    """Delete NetworkManager wireless profiles that were never activated.
+
+    vasili connects with ``nmcli device wifi connect``, which creates an NM
+    profile per attempt. Failed attempts (the norm when probing neighbours
+    without credentials) leave the profile behind, accumulating duplicates like
+    "SSID 1", "SSID 2", ... — hundreds pile up over time. A profile that ever
+    connected has a non-zero TIMESTAMP and is kept; never-activated ones are
+    safe to delete (the credentials vasili relies on live in the known-networks
+    vault, not these transient profiles).
+
+    With ``ssid`` set, only never-activated profiles for that SSID (and its
+    "SSID N" duplicates) are removed — called right after a failed connect so
+    sprawl never accumulates. With ``ssid`` None (startup), every
+    never-activated wireless profile is pruned. Active/used profiles are never
+    touched. Returns the number removed.
+    """
+    victims: list[str] = []
+    try:
+        r = subprocess.run(
+            ['nmcli', '-t', '-f', 'UUID,NAME,TYPE,TIMESTAMP,ACTIVE',
+             'connection', 'show'],
+            capture_output=True, text=True, timeout=10,
+        )
+        for line in r.stdout.splitlines():
+            if not line:
+                continue
+            # NAME (field 2) can contain escaped colons; UUID and the trailing
+            # TYPE/TIMESTAMP/ACTIVE fields are colon-free, so peel the last 3
+            # off the right and the UUID off the left.
+            try:
+                head, ctype, timestamp, active = line.rsplit(':', 3)
+                uuid, _, name = head.partition(':')
+            except ValueError:
+                continue
+            if '802-11-wireless' not in ctype:
+                continue
+            if active == 'yes' or timestamp not in ('', '0'):
+                continue  # in use or has connected before — keep
+            if ssid is not None:
+                nm = name.replace('\\:', ':')
+                base, sep, tail = nm.rpartition(' ')
+                base = base if (sep and tail.isdigit()) else nm
+                if nm != ssid and base != ssid:
+                    continue
+            victims.append(uuid)
+
+        def _delete(uuid: str) -> bool:
+            try:
+                d = subprocess.run(['nmcli', 'connection', 'delete', uuid],
+                                   capture_output=True, text=True, timeout=5)
+                return d.returncode == 0
+            except Exception:
+                return False
+
+        removed = 0
+        if victims:
+            from concurrent.futures import ThreadPoolExecutor
+            with ThreadPoolExecutor(max_workers=8) as pool:
+                removed = sum(pool.map(_delete, victims))
+    except Exception as e:
+        logger.debug(f'_prune_stale_wifi_profiles: {e}')
+        return 0
+    if removed:
+        scope = f' for {ssid}' if ssid else ''
+        logger.info(
+            f'Pruned {removed} never-activated WiFi profile(s){scope} from NetworkManager'
+        )
+    return removed
+
+
 class WifiCard:
     def __init__(self, interface_name: str, mac_manager: MacManager = None):
         """Initialize a wifi card with the given interface name"""
@@ -1660,6 +1761,11 @@ class WifiCard:
         self._original_mac: Optional[str] = None
         self.current_task: Optional[dict] = None
         self.current_mode: str = 'managed'  # managed, monitor, etc.
+        # Transient connect-time scan phase, surfaced as a UI card tag:
+        #   'target-scan'   — fast single-channel scan on the target's channel
+        #   'target-rescan' — full nmcli rescan fallback when the targeted scan
+        #                     didn't surface the SSID. None when idle.
+        self._scan_phase: Optional[str] = None
 
         # Verify the interface exists and is a wireless device
         if not os.path.isdir(f'/sys/class/net/{interface_name}/wireless'):
@@ -1771,33 +1877,126 @@ class WifiCard:
             logger.error(f'Scan failed on interface {self.interface}: {e}')
             return []
 
+    @staticmethod
+    def _channel_to_freq(channel: int) -> Optional[int]:
+        """Map a WiFi channel to its centre frequency in MHz (2.4 / 5 GHz)."""
+        if not channel or channel < 1:
+            return None
+        if channel == 14:
+            return 2484
+        if channel <= 14:
+            return 2407 + channel * 5
+        return 5000 + channel * 5  # 5 GHz
+
+    def _targeted_scan(self, network: WifiNetwork) -> bool:
+        """Fast single-channel scan on the connecting card for ``network``.
+
+        The dedicated scan card sees the AP, but ``nmcli device wifi connect``
+        only matches *this* card's own scan cache. Rather than a full ~2-4s
+        sweep, scan just the AP's channel (~100-300ms) with ``iw``;
+        wpa_supplicant/NM pick up the resulting BSS via shared nl80211 scan
+        events, so the SSID becomes connectable here. Returns True if the scan
+        ran. No-op (returns False) when the channel is unknown — the caller then
+        relies on the full-rescan fallback.
+        """
+        freq = self._channel_to_freq(network.channel)
+        if freq is None:
+            return False
+        self._scan_phase = 'target-scan'
+        try:
+            subprocess.run(['ip', 'link', 'set', self.interface, 'up'],
+                           capture_output=True)
+            subprocess.run(
+                ['iw', 'dev', self.interface, 'scan', 'freq', str(freq)],
+                capture_output=True, text=True, timeout=8,
+            )
+            logger.info(
+                'Targeted scan on %s (ch %s / %s MHz) for %s',
+                self.interface, network.channel, freq, network.ssid,
+            )
+            return True
+        except Exception as e:
+            logger.debug(
+                'Targeted scan on %s freq %s failed: %s', self.interface, freq, e
+            )
+            return False
+
+    def _full_rescan(self) -> None:
+        """Full NM rescan fallback when the targeted scan didn't surface the AP."""
+        self._scan_phase = 'target-rescan'
+        try:
+            subprocess.run(
+                ['nmcli', 'device', 'wifi', 'rescan', 'ifname', self.interface],
+                capture_output=True, text=True, timeout=15,
+            )
+            time.sleep(2)  # let results populate before the retry
+        except Exception as e:
+            logger.debug('Full rescan on %s failed: %s', self.interface, e)
+
     def connect(
         self,
         network: WifiNetwork,
         password: Optional[str] = None,
-        max_retries: int = 3,
-        base_delay: float = 1.0,
-        attempt_timeout: float = 10.0,
+        max_retries: Optional[int] = None,
+        base_delay: Optional[float] = None,
+        attempt_timeout: Optional[float] = None,
     ) -> bool:
         """
         Connect to a WiFi network using this card with automatic retry logic.
 
+        Timing comes from the ``connection`` config section when not passed
+        explicitly. Weak APs (signal at or below
+        ``connection.weak_signal_threshold``) automatically get the longer
+        ``weak_signal_timeout`` / ``weak_signal_retries`` so distant networks
+        get more time to associate on the initial connection.
+
         Args:
             network: The WifiNetwork to connect to
             password: Optional password for encrypted networks
-            max_retries: Maximum number of connection attempts (default: 3)
-            base_delay: Base delay in seconds between retries, doubles each attempt (default: 1.0)
-            attempt_timeout: Per-attempt nmcli subprocess timeout in seconds (default: 10.0)
+            max_retries: Override max attempts (default: from config)
+            base_delay: Override base retry backoff (default: from config)
+            attempt_timeout: Override per-attempt nmcli timeout (default: from config)
 
         Returns:
             True if connection successful, False otherwise
         """
+        # Resolve timing from config, scaling up for weak-signal APs. Explicit
+        # arguments always win (e.g. reconnect's fast-path values).
+        conn_cfg = get_config().connection
+        weak = (
+            conn_cfg.weak_signal_threshold > 0
+            and network.signal_strength is not None
+            and network.signal_strength <= conn_cfg.weak_signal_threshold
+        )
+        if max_retries is None:
+            max_retries = (conn_cfg.weak_signal_retries if weak
+                           else conn_cfg.max_retries)
+        if attempt_timeout is None:
+            attempt_timeout = (conn_cfg.weak_signal_timeout if weak
+                               else conn_cfg.attempt_timeout)
+        if base_delay is None:
+            base_delay = conn_cfg.base_delay
+        if weak:
+            logger.info(
+                'Weak signal (%s) for %s — using extended connect timing '
+                '(%ss timeout, %s attempts)',
+                network.signal_strength, network.ssid, attempt_timeout,
+                max_retries,
+            )
+
         attempt = 0
         last_error = None
 
         # Apply per-network MAC before connecting (privacy + session consistency)
         if self._mac_manager and network.bssid:
             self._apply_network_mac(network.bssid)
+
+        # Seed this card's NM scan cache for the target: scan just the AP's
+        # channel (fast) so `nmcli connect` can find a network only the
+        # dedicated scan card saw. Falls back to a full rescan on the first
+        # ssid_not_found below.
+        self._targeted_scan(network)
+        rescan_fallback_done = False
 
         while attempt < max_retries:
             attempt += 1
@@ -1853,6 +2052,7 @@ class WifiCard:
                     # the interface to this SSID even after vasili releases
                     # it for scanning/other modules.
                     _nm_disable_autoconnect_for_interface(self.interface)
+                    self._scan_phase = None
                     return True
                 else:
                     last_error = f'nmcli error: {result.stderr}'
@@ -1861,10 +2061,29 @@ class WifiCard:
                         f'Attempt {attempt}/{max_retries} failed for {network.ssid} '
                         f'[{kind}]: {result.stderr.strip()}'
                     )
-                    if kind in ('auth', 'ssid_not_found'):
+                    if kind == 'auth':
                         logger.error(
-                            f'Permanent failure ({kind}) for {network.ssid} on '
+                            f'Permanent failure (auth) for {network.ssid} on '
                             f'{self.interface}; skipping remaining retries.'
+                        )
+                        break
+                    if kind == 'ssid_not_found':
+                        # The dedicated scan card sees this AP but this card's
+                        # cache didn't have it. Try one full rescan before
+                        # giving up — the targeted scan may have missed it
+                        # (busy radio) or the channel was unknown.
+                        if not rescan_fallback_done:
+                            rescan_fallback_done = True
+                            logger.info(
+                                '%s not in %s scan cache — full rescan and retry',
+                                network.ssid, self.interface,
+                            )
+                            self._full_rescan()
+                            continue
+                        logger.error(
+                            f'Permanent failure (ssid_not_found) for {network.ssid} '
+                            f'on {self.interface} after rescan; skipping remaining '
+                            'retries.'
                         )
                         break
 
@@ -1887,6 +2106,11 @@ class WifiCard:
         logger.error(
             f'Failed to connect to {network.ssid} after {attempt} attempt(s). Last error: {last_error}'
         )
+        self._scan_phase = None
+        # nmcli created a (never-activated) profile for each failed attempt;
+        # prune them for this SSID so junk doesn't accumulate. Scoped to this
+        # SSID to avoid touching another card's in-flight connect.
+        _prune_stale_wifi_profiles(network.ssid)
         # NB: do NOT clear self.in_use here. Lease ownership belongs to
         # WifiCardManager.lease_card / return_card; a failed connect attempt
         # within an already-leased pipeline must not surrender the lease,
@@ -3924,6 +4148,9 @@ class WifiManager:
         that would hijack a card as soon as vasili releases it.
         """
         _nm_disable_autoconnect_all_wifi()
+        # Also delete the never-activated junk profiles that failed connect
+        # attempts leave behind, so they don't pile up over time.
+        _prune_stale_wifi_profiles()
 
     def _reconcile_suitable_connections(self):
         """Drop / repoint suitable_connections entries to match OS reality.
@@ -5735,6 +5962,10 @@ def get_cards():
             'gateway': None,
             'routing_table': None,
             'current_task': card.current_task,
+            # Transient connect-time scan phase for the UI: 'target-scan' (fast
+            # single-channel seed) or 'target-rescan' (full-rescan fallback).
+            'scan_phase': card._scan_phase,
+            'tags': [card._scan_phase] if card._scan_phase else [],
             'current_freq': freq_info.get('current_freq'),
             'current_band': freq_info.get('current_band'),
             'current_channel': freq_info.get('current_channel'),

@@ -43,6 +43,23 @@ scanner:
   # Interval between scans in seconds
   scan_interval: 5
 
+# Connection attempt timing
+# Weak (low-signal) APs associate more slowly, so they automatically get the
+# longer weak_signal_* settings — handy for pulling in distant networks on the
+# initial connection.
+connection:
+  # Normal-signal networks:
+  attempt_timeout: 10.0   # per-attempt nmcli timeout, seconds
+  max_retries: 3          # attempts per network
+  base_delay: 1.0         # base retry backoff, seconds (doubles each attempt)
+
+  # Weak-signal handling. A network whose signal (nmcli 0-100 scale) is at or
+  # below weak_signal_threshold uses the longer timeout / more retries below.
+  # Set weak_signal_threshold: 0 to disable and treat every network the same.
+  weak_signal_threshold: 40
+  weak_signal_timeout: 25.0
+  weak_signal_retries: 4
+
 # Web interface settings
 web:
   # Host to bind to (0.0.0.0 = all interfaces)
