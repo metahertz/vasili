@@ -161,27 +161,34 @@ class DnsTunnelHelper:
         return False
 
     def _log_process_output(self) -> str:
-        """Drain iodine's output, log it, and return the most informative line.
+        """Drain iodine's output, log it, and return its diagnostic tail.
 
-        iodine prints the real cause here — "Bad password", "Server rejected
-        secret", "Couldn't connect to server", "DNS query timed out", "Got NXDOMAIN",
-        etc. We surface that to the stage so the failure message names it.
+        iodine prints the real cause across several lines (e.g. "Server tunnel
+        version did not match", "Got NXDOMAIN", "handshake with server failed",
+        "Bad password") followed by a generic "(Also, connecting to an ancient
+        version of iodined won't work.)" hint. Returning only the last line
+        loses the specific reason, so we return the last few non-empty lines.
         """
         if not self.process:
             return ''
         try:
             out, _ = self.process.communicate(timeout=2)
         except Exception:
-            return ''
+            # Still running (foreground iodine retrying) — stop it and flush
+            # whatever it has printed so far instead of returning nothing.
+            try:
+                self.process.terminate()
+                out, _ = self.process.communicate(timeout=2)
+            except Exception:
+                return ''
         if not out:
             return ''
         text = out.decode(errors='replace').strip()
-        logger.debug('iodine output: %s', text[:500])
-        keywords = ('error', 'bad', 'reject', 'fail', 'denied', 'timed out',
-                    'timeout', 'refused', 'nxdomain', 'cannot', "couldn't",
-                    'could not', 'no response', 'unable')
+        logger.debug('iodine output: %s', text[:1000])
         lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
-        for ln in reversed(lines):
-            if any(k in ln.lower() for k in keywords):
-                return ln[:200]
-        return lines[-1][:200] if lines else ''
+        if not lines:
+            return ''
+        # The specific cause is usually the line(s) just before iodine's
+        # trailing hint, so surface the tail (most recent several lines).
+        tail = ' | '.join(lines[-6:])
+        return tail[:400]
