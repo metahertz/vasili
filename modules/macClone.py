@@ -32,7 +32,7 @@ class MacCloneStage(PipelineStage):
         )
 
     def run(self, network: WifiNetwork, card, context: dict) -> StageResult:
-        cfg = self.get_module_config()
+        cfg = self._get_stage_config()
         max_attempts = cfg.get('max_clone_attempts', 3)
         restore_on_failure = cfg.get('restore_on_failure', True)
 
@@ -207,7 +207,7 @@ class MacCloneStage(PipelineStage):
             logger.info('No spare card for monitor-mode client discovery')
             return []
 
-        cfg = self.get_module_config()
+        cfg = self._get_stage_config()
         monitor_seconds = cfg.get('monitor_seconds', 15)
         clients: list[str] = []
         try:

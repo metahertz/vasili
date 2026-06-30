@@ -174,6 +174,8 @@ ssh -p "$REMOTE_PORT" "$REMOTE_USER@$REMOTE_HOST" bash <<ENDSSH
         iptables \\
         dnsmasq \\
         iw \\
+        iodine \\
+        wireguard-tools \\
         build-essential \\
         libnetfilter-queue-dev \\
         bluez \\
