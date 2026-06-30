@@ -5,7 +5,16 @@ into per-stage config, and the stage-side read path that now merges stored
 overrides over schema defaults.
 """
 
-from vasili import parse_helper_config, HELPER_CONFIG_KEY_STAGE, PipelineStage
+import base64
+import stat
+
+from vasili import (
+    parse_helper_config,
+    HELPER_CONFIG_KEY_STAGE,
+    HELPER_ARTIFACT_TARGETS,
+    _write_helper_artifact,
+    PipelineStage,
+)
 
 
 # A realistic block as emitted by helper/app/app.py:api_client_config.
@@ -88,6 +97,36 @@ def test_key_map_covers_all_helper_keys():
     assert set(HELPER_CONFIG_KEY_STAGE.values()) == {
         'dns_port_tunnel', 'dns_tunnel', 'dns_offload_crack',
     }
+
+
+def test_b64_artifacts_parse_as_known_keys():
+    # Inlined file artifacts route to dns_port_tunnel (known, not 'unknown');
+    # helper_import pulls them out and writes the files.
+    block = 'wg_config_b64: aGVsbG8=\nssh_key_b64: d29ybGQ=\n'
+    by_stage, unknown = parse_helper_config(block)
+    assert unknown == []
+    assert by_stage['dns_port_tunnel'] == {
+        'wg_config_b64': 'aGVsbG8=', 'ssh_key_b64': 'd29ybGQ=',
+    }
+    # Both artifact keys are registered with write targets.
+    assert set(HELPER_ARTIFACT_TARGETS) == {'wg_config_b64', 'ssh_key_b64'}
+
+
+def test_write_helper_artifact_decodes_and_chmods(tmp_path):
+    target = tmp_path / 'sub' / 'wg.conf'  # parent dir created too
+    content = b'[Interface]\nPrivateKey = abc123\n'
+    ok, err = _write_helper_artifact(
+        base64.b64encode(content).decode(), str(target), 0o600)
+    assert ok and err == ''
+    assert target.read_bytes() == content
+    assert stat.S_IMODE(target.stat().st_mode) == 0o600
+
+
+def test_write_helper_artifact_rejects_bad_base64(tmp_path):
+    ok, err = _write_helper_artifact('!!not base64!!', str(tmp_path / 'x'), 0o600)
+    assert not ok
+    assert 'base64' in err
+    assert not (tmp_path / 'x').exists()
 
 
 class _FakeStore:

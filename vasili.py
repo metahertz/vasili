@@ -6260,12 +6260,49 @@ HELPER_CONFIG_KEY_STAGE = {
     'ssh_user': 'dns_port_tunnel',
     'ssh_key_path': 'dns_port_tunnel',
     'wg_config_path': 'dns_port_tunnel',
+    # Inlined (base64) file artifacts — see HELPER_ARTIFACT_TARGETS. Routed to
+    # the same stage so they parse as known keys; helper_import pulls them out,
+    # writes the files, and does NOT persist the blob into stage config.
+    'wg_config_b64': 'dns_port_tunnel',
+    'ssh_key_b64': 'dns_port_tunnel',
     'server_domain': 'dns_tunnel',
     'tunnel_password': 'dns_tunnel',
     'tunnel_type': 'dns_tunnel',
     'offload_domain': 'dns_offload_crack',
     'offload_secret': 'dns_offload_crack',
 }
+
+# Inlined file artifacts the helper block can carry so a single paste fully
+# provisions WireGuard/SSH (the key material no longer needs a separate
+# download). Maps the base64 key to the path key it pairs with, the default
+# path to write if that path key is absent, and the file mode.
+HELPER_ARTIFACT_TARGETS = {
+    'wg_config_b64': ('wg_config_path', '/etc/wireguard/wg-vasili-client.conf', 0o600),
+    'ssh_key_b64': ('ssh_key_path', '/etc/vasili/ssh_client_key', 0o600),
+}
+
+
+def _write_helper_artifact(b64_value: str, path: str, mode: int):
+    """Decode a base64 artifact and write it to ``path`` with ``mode``.
+
+    Returns ``(ok, error)``. Creates the parent dir; writes mode-0600 secrets
+    (WireGuard config / SSH key) the WireGuard / SSH-tunnel stages then load.
+    """
+    import base64
+    try:
+        data = base64.b64decode(b64_value, validate=True)
+    except Exception as e:
+        return False, f'invalid base64 ({e})'
+    try:
+        parent = os.path.dirname(path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        with open(path, 'wb') as f:
+            f.write(data)
+        os.chmod(path, mode)
+        return True, ''
+    except Exception as e:
+        return False, str(e)
 
 
 def parse_helper_config(text: str):
@@ -6317,6 +6354,26 @@ def helper_import():
             'unknown_keys': sorted(set(unknown)),
         }), 400
 
+    # Pull inlined file artifacts out of the parsed config, decode them, and
+    # write them to disk. They are NOT persisted into stage config (the stages
+    # read the file at the path, not the blob). The matching *_path key (also
+    # in the block) is left in place so it still gets stored.
+    artifacts_written: list[str] = []
+    artifact_errors: list[str] = []
+    dpt = by_stage.get('dns_port_tunnel', {})
+    for akey, (path_key, default_path, mode) in HELPER_ARTIFACT_TARGETS.items():
+        blob = dpt.pop(akey, None)
+        if blob is None:
+            continue
+        path = dpt.get(path_key) or default_path
+        ok, err = _write_helper_artifact(blob, path, mode)
+        if ok:
+            artifacts_written.append(path)
+        else:
+            artifact_errors.append(f'{akey}: {err}')
+    # If a stage now has no remaining config (only carried artifacts), drop it.
+    by_stage = {s: v for s, v in by_stage.items() if v}
+
     applied: dict[str, list] = {}
     failed: list[str] = []
     for stage, values in by_stage.items():
@@ -6326,9 +6383,11 @@ def helper_import():
             failed.append(stage)
 
     return jsonify({
-        'success': not failed,
+        'success': not failed and not artifact_errors,
         'applied': applied,
         'failed': sorted(failed),
+        'artifacts_written': sorted(artifacts_written),
+        'artifact_errors': sorted(artifact_errors),
         'unknown_keys': sorted(set(unknown)),
         'store_available': wifi_manager.module_config.is_available(),
     })

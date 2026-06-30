@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """vasili-helper UI — Flask app that drives the bundled servers."""
 
+import base64
 import functools
 import json
 import os
@@ -244,10 +245,14 @@ def api_ssh_client_key():
                      download_name='vasili-ssh-client')
 
 
-@app.route('/api/wg-client-config')
-@require_auth
-def api_wg_client_config():
-    conf = load_config()
+def build_wg_client_config(conf: dict) -> str:
+    """Generate (idempotently) the WireGuard client config text.
+
+    Creates the client keypair on first use and registers its public key as a
+    peer, restarting the WG backend ONLY when the registered pubkey actually
+    changes — so this is safe to call on every client-config view (e.g. when
+    inlining it into the copy-paste block) without churning the backend.
+    """
     wg = conf.get('wireguard', {})
     public_ip = detect_public_ip(conf.get('public_ip', 'auto'))
     srv_pub = WG_SERVER_PUB.read_text().strip() if WG_SERVER_PUB.exists() else ''
@@ -275,12 +280,20 @@ def api_wg_client_config():
         'AllowedIPs = 0.0.0.0/0\n'
         'PersistentKeepalive = 25\n'
     )
-    # Also update saved config with the generated client_pubkey so the
-    # server-side peer list matches.
+    # Register the client pubkey for the server-side peer list; only persist +
+    # restart when it actually changed, so viewing the config isn't destructive.
     cli_pub = client_pub_file.read_text().strip()
-    conf.setdefault('wireguard', {})['client_pubkey'] = cli_pub
-    save_config(conf)
-    supervisorctl('restart', 'wg-backend')
+    if conf.get('wireguard', {}).get('client_pubkey') != cli_pub:
+        conf.setdefault('wireguard', {})['client_pubkey'] = cli_pub
+        save_config(conf)
+        supervisorctl('restart', 'wg-backend')
+    return body
+
+
+@app.route('/api/wg-client-config')
+@require_auth
+def api_wg_client_config():
+    body = build_wg_client_config(load_config())
     return (body, 200, {
         'Content-Type': 'text/plain',
         'Content-Disposition': 'attachment; filename="wg-vasili-client.conf"',
@@ -300,8 +313,13 @@ def api_client_config():
             f'ssh_server: {public_ip}',
             'ssh_user: root',
             'ssh_key_path: /etc/vasili/ssh_client_key',
-            '',
         ]
+        # Inline the client private key (base64) so a single paste provisions
+        # it — vasili writes it to ssh_key_path (0600) on import.
+        if SSH_CLIENT_KEY.exists():
+            key_b64 = base64.b64encode(SSH_CLIENT_KEY.read_bytes()).decode()
+            lines.append(f'ssh_key_b64: {key_b64}')
+        lines.append('')
     if conf.get('iodine', {}).get('enabled'):
         iod = conf.get('iodine', {})
         lines += [
@@ -317,11 +335,15 @@ def api_client_config():
         ]
     if conf.get('wireguard', {}).get('enabled'):
         lines += [
-            '# dns_port_tunnel stage (WireGuard) — fetch wg config from',
-            '# /api/wg-client-config and place at /etc/wireguard/wg-vasili-client.conf',
+            '# dns_port_tunnel stage (WireGuard) — config inlined below;',
+            '# vasili writes it to wg_config_path (0600) on import.',
             'wg_config_path: /etc/wireguard/wg-vasili-client.conf',
-            '',
         ]
+        wg_b64 = base64.b64encode(
+            build_wg_client_config(conf).encode()
+        ).decode()
+        lines.append(f'wg_config_b64: {wg_b64}')
+        lines.append('')
     if conf.get('crack', {}).get('enabled'):
         cr = conf['crack']
         lines += [
