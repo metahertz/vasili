@@ -1665,9 +1665,33 @@ class WifiCard:
         if not os.path.isdir(f'/sys/class/net/{interface_name}/wireless'):
             raise ValueError(f'Interface {interface_name} is not a valid wireless device')
 
+    def ensure_nm_managed(self) -> None:
+        """Make sure NetworkManager manages this card so nmcli can scan it.
+
+        ``scan()`` relies on ``nmcli device wifi rescan/list``, which only
+        returns results for NM-managed devices. A card NM doesn't auto-manage
+        (common for USB adapters) or one previously released to AP/isolation
+        ("managed no") silently scans **nothing** — the dedicated scanning card
+        must therefore be reasserted as managed. No-op when already managed.
+        """
+        try:
+            subprocess.run(
+                ['nmcli', 'device', 'set', self.interface, 'managed', 'yes'],
+                capture_output=True, text=True, timeout=5,
+            )
+        except Exception as e:
+            logger.warning(
+                f'Could not set {self.interface} NM-managed for scanning: {e}'
+            )
+
     def scan(self) -> list[WifiNetwork]:
         """Scan for available networks using this card via nmcli"""
         try:
+            # The scan card must be NM-managed for nmcli to return results;
+            # reassert it (cheap no-op when already managed) so a card NM left
+            # unmanaged doesn't silently scan nothing.
+            self.ensure_nm_managed()
+
             # Put interface up
             subprocess.run(
                 ['ip', 'link', 'set', self.interface, 'up'],
@@ -2304,6 +2328,13 @@ class WifiCardManager:
             if not self._scanning_card and self.cards:
                 self._scanning_card = self.cards[0]
                 logger.info(f'Designated {self._scanning_card.interface} as scanning card (auto)')
+
+            # The scanning card must be NM-managed for nmcli scans to work.
+            # USB adapters (and cards previously released for AP/isolation) are
+            # often left unmanaged, which makes every scan silently return zero
+            # networks — reassert management up front.
+            if self._scanning_card:
+                self._scanning_card.ensure_nm_managed()
 
             return len(self.cards)
 
