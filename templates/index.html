@@ -369,13 +369,20 @@
                 const bw = (c.bridged || c.override)
                     ? ` <span class="bw" data-iface="${c.interface}"></span>`
                     : '';
+                // Real internet egress IP (the tunnel's exit IP for a tunnelled
+                // bridge). Present = connectivity verified end-to-end.
+                const endpoint = c.endpoint_ip
+                    ? ` <span class="badge" style="background:#1f6feb33;color:#58a6ff" title="Real internet egress IP — connectivity verified end-to-end${c.tunnel_interface ? ' via tunnel ' + c.tunnel_interface : ''}">↗ ${c.endpoint_ip}</span>`
+                    : ((c.bridged || c.override)
+                        ? ` <span class="badge" style="background:#30363d;color:#8b949e" title="Resolving egress IP / verifying connectivity…">↗ …</span>`
+                        : '');
                 const note = c.override
                     ? `<div style="color:#8b949e;font-size:0.8em;margin-top:2px">Investigation mode — forced upstream, may have no internet</div>`
                     : '';
                 return `<div class="conn-item">
                     <div style="display:flex;justify-content:space-between;align-items:center">
                         <div><span class="ssid">${n.ssid||'(Hidden)'}</span>${n.uncloaked?' <span class="badge badge-uncloaked">UNCLOAKED</span>':''} <span class="method">${c.connection_method} via ${c.interface}</span></div>
-                        <div>${action}</div>
+                        <div>${action}${endpoint}</div>
                     </div>
                     <div class="conn-stats">
                         <span class="dl">${c.download_speed.toFixed(1)} down</span>

@@ -213,6 +213,11 @@ class ConnectionResult:
     # pinned entry is exempt from auto-selector switching, auto-bridge
     # replacement, and reconcile teardown until manually unbridged.
     pinned: bool = False
+    # Tunnel interface this connection's internet actually exits through, when
+    # it was established via a tunnel stage (e.g. 'wg-vasili', 'tun53', 'dns0').
+    # None for plain WiFi connections. Used to query the real egress IP through
+    # the tunnel rather than the local WiFi card.
+    tunnel_interface: Optional[str] = None
 
     def calculate_score(self) -> float:
         """
@@ -3898,6 +3903,7 @@ class PipelineModule(ConnectionModule):
                     ping=ping, connected=True,
                     connection_method=f'pipeline:{successful_stage}',
                     interface=card.interface,
+                    tunnel_interface=context.get('tunnel_interface'),
                 )
 
         # Tear down any active tunnel before disconnecting
@@ -4064,6 +4070,12 @@ class WifiManager:
         # reconcile paths must leave it (and its pinned connection) alone until
         # the operator unbridges. See start_bridge_override/stop_bridge_override.
         self._bridge_override_iface: Optional[str] = None
+        # Public egress ("endpoint") IP of the currently bridged connection —
+        # the real internet IP traffic exits from (the tunnel's exit IP for a
+        # tunnelled bridge). Computed in a background thread after a bridge
+        # comes up (also a real end-to-end connectivity check); None until
+        # known / when no bridge is active. Surfaced as a UI tag.
+        self._bridge_endpoint_ip: Optional[str] = None
         self.hostap: Optional[HostAP] = None
         self._hostap_lazy_pending = False  # True when AP is confirmed but waiting for card
         self._hostap_claiming = False  # Re-entrancy guard for card-returned callback
@@ -4174,6 +4186,7 @@ class WifiManager:
                 )
                 self.active_bridge.stop()
                 self.status['current_bridge'] = None
+                self._bridge_endpoint_ip = None
             try:
                 emit_connections_update()
                 emit_status_update()
@@ -4365,6 +4378,7 @@ class WifiManager:
         # Stop any existing share
         if self.active_bridge:
             self.active_bridge.stop()
+        self._bridge_endpoint_ip = None  # stale once the bridge changes
 
         connection = self.suitable_connections[connection_index]
         upstream = connection.interface
@@ -4392,9 +4406,36 @@ class WifiManager:
             # HostAP runs its own NAT chain; point it at the new upstream.
             if self.hostap and self.hostap.is_active:
                 self.hostap.update_upstream(upstream)
+            # Resolve the real egress IP in the background (a few seconds of
+            # curl); don't block bringing the bridge up. Pushes a connections
+            # update with the endpoint-IP tag once known.
+            threading.Thread(
+                target=self._refresh_bridge_endpoint_ip,
+                args=(connection, upstream),
+                name='endpoint-ip', daemon=True,
+            ).start()
             return True
 
         return False
+
+    def _refresh_bridge_endpoint_ip(self, connection: 'ConnectionResult',
+                                    upstream: str):
+        """Find the public egress IP of the just-bridged connection.
+
+        Queries through the tunnel interface when the connection is tunnelled
+        (so the tag shows the tunnel's exit IP), else through the WiFi card.
+        Also a real end-to-end connectivity check. Only stores the result if
+        this bridge is still the active one (avoids a stale write racing a
+        newer bridge).
+        """
+        query_iface = connection.tunnel_interface or upstream
+        ip = network_isolation.get_public_ip(query_iface)
+        bridge = self.active_bridge
+        if bridge and bridge.is_active and bridge.wifi_interface == upstream:
+            self._bridge_endpoint_ip = ip
+            logger.info('Bridge %s endpoint IP: %s (via %s)',
+                        upstream, ip or 'unreachable', query_iface)
+            emit_connections_update()
 
     def _discover_downstream_surfaces(self, exclude: str = '') -> list[str]:
         """Local interfaces that should receive NAT'd internet from the
@@ -4440,6 +4481,7 @@ class WifiManager:
         if self.active_bridge:
             self.active_bridge.stop()
             self.status['current_bridge'] = None
+        self._bridge_endpoint_ip = None
 
     # ------------------------------------------------------------------
     # Bridge Override — operator force-bridges a chosen network
@@ -4593,6 +4635,7 @@ class WifiManager:
         if self.active_bridge:
             self.active_bridge.stop()
             self.status['current_bridge'] = None
+        self._bridge_endpoint_ip = None
 
         removed = None
         with self._connections_lock:
@@ -5829,8 +5872,13 @@ def emit_connections_update():
                 'connected': conn.connected,
                 'connection_method': conn.connection_method,
                 'interface': conn.interface,
+                'tunnel_interface': conn.tunnel_interface,
                 'bridged': (conn.interface == bridged_iface),
                 'override': bool(override_iface) and conn.interface == override_iface,
+                # Real internet egress IP of the active bridge (the tunnel's
+                # exit IP for a tunnelled bridge). Only the bridged row has it.
+                'endpoint_ip': (wifi_manager._bridge_endpoint_ip
+                                if conn.interface == bridged_iface else None),
             }
             connections_data.append(conn_dict)
         socketio.emit('connections_update', {'connections': connections_data})
@@ -5884,6 +5932,8 @@ def get_connections():
         d = vars(conn).copy()
         d['bridged'] = (conn.interface == bridged_iface)
         d['override'] = bool(override_iface) and conn.interface == override_iface
+        d['endpoint_ip'] = (wifi_manager._bridge_endpoint_ip
+                            if d['bridged'] else None)
         out.append(d)
     return jsonify(out)
 

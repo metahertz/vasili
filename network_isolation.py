@@ -9,6 +9,7 @@ is directed to a dedicated routing table with a default route via that
 WiFi interface's gateway.
 """
 
+import ipaddress
 import subprocess
 import threading
 from subprocess import TimeoutExpired
@@ -180,6 +181,47 @@ def teardown_interface_routing(interface: str, routing_info: dict):
         )
 
     logger.info(f'Routing isolation torn down for {interface}')
+
+
+def _is_valid_ip(value: str) -> bool:
+    try:
+        ipaddress.ip_address(value)
+        return True
+    except ValueError:
+        return False
+
+
+def get_public_ip(interface: str) -> Optional[str]:
+    """Return the public egress IP the internet sees through ``interface``.
+
+    Binds curl to the interface (like ``verify_connectivity``) so the request
+    routes out of that specific connection. For a tunnelled interface
+    (wg-vasili / tun53 / dns0) this is the **tunnel's exit IP**, not the local
+    WiFi's — exactly the "where will my traffic appear to come from" answer.
+
+    Doubles as a real end-to-end connectivity check: a valid IP back means
+    traffic genuinely reaches the internet via this path. Returns the IP
+    string, or None if unreachable / no valid answer.
+    """
+    for url in ('https://api.ipify.org', 'https://ifconfig.me/ip',
+                'https://icanhazip.com'):
+        try:
+            result = subprocess.run(
+                ['curl', '--interface', interface,
+                 '--connect-timeout', '5', '-s', url],
+                capture_output=True, text=True, timeout=10,
+            )
+            ip = (result.stdout or '').strip()
+            if _is_valid_ip(ip):
+                logger.debug('Public IP via %s: %s', interface, ip)
+                return ip
+        except TimeoutExpired:
+            continue
+        except Exception as e:
+            logger.debug('Public IP fetch on %s failed (%s): %s', interface, url, e)
+            continue
+    logger.debug('Could not determine public IP via %s', interface)
+    return None
 
 
 def verify_connectivity(interface: str) -> bool:
