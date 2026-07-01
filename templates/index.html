@@ -212,7 +212,11 @@
         <div class="detail-panel" id="detail-content"></div>
     </div>
 
-    <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+    <!-- Vendored locally (static/socket.io.min.js) so the UI works fully
+         offline — over HostAP or any no-internet path, where a CDN fetch
+         would fail and break live updates. Keep the file version in sync
+         with the flask-socketio server version. -->
+    <script src="/static/socket.io.min.js"></script>
     <script>
         const socket = io();
         let activityEntries = [];

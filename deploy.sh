@@ -139,7 +139,7 @@ fi
 
 # Create remote directory
 log_info "Creating remote directory structure..."
-ssh -p "$REMOTE_PORT" "$REMOTE_USER@$REMOTE_HOST" "$SUDO mkdir -p $REMOTE_DIR/{modules,templates} && $SUDO chown -R $REMOTE_USER:$REMOTE_USER $REMOTE_DIR"
+ssh -p "$REMOTE_PORT" "$REMOTE_USER@$REMOTE_HOST" "$SUDO mkdir -p $REMOTE_DIR/{modules,templates,static} && $SUDO chown -R $REMOTE_USER:$REMOTE_USER $REMOTE_DIR"
 
 # Transfer files
 log_info "Transferring project files..."
@@ -151,6 +151,8 @@ scp -P "$REMOTE_PORT" requirements.txt "$REMOTE_USER@$REMOTE_HOST:$REMOTE_DIR/"
 scp -P "$REMOTE_PORT" vasili.service "$REMOTE_USER@$REMOTE_HOST:$REMOTE_DIR/"
 scp -P "$REMOTE_PORT" modules/*.py "$REMOTE_USER@$REMOTE_HOST:$REMOTE_DIR/modules/" 2>/dev/null || log_warn "No module files found"
 scp -P "$REMOTE_PORT" templates/*.html "$REMOTE_USER@$REMOTE_HOST:$REMOTE_DIR/templates/" 2>/dev/null || log_warn "No template files found"
+# Vendored static assets (e.g. socket.io) so the UI works fully offline.
+scp -P "$REMOTE_PORT" static/* "$REMOTE_USER@$REMOTE_HOST:$REMOTE_DIR/static/" 2>/dev/null || log_warn "No static files found"
 
 # Install system dependencies
 log_info "Installing system dependencies..."
